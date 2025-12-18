@@ -17,9 +17,13 @@ interface Voice {
 
 export interface VisualSelection {
   id: string;
+  /** X position as percentage (0-100) of video frame width */
   x: number;
+  /** Y position as percentage (0-100) of video frame height */
   y: number;
+  /** Width as percentage (0-100) of video frame width */
   width: number;
+  /** Height as percentage (0-100) of video frame height */
   height: number;
   startTime: number;
   endTime: number;
@@ -27,6 +31,7 @@ export interface VisualSelection {
   label?: string;
   replacementType?: 'text' | 'image' | 'blur' | 'remove';
   replacementValue?: string;
+  enableTracking?: boolean;
 }
 
 export interface TranscriptEdit {

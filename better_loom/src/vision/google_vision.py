@@ -17,11 +17,18 @@ from ..config import settings
 
 @dataclass
 class BoundingBox:
-    """Normalized bounding box (0-1 coordinates)."""
-    x: float      # Left edge (0-1)
-    y: float      # Top edge (0-1)
-    width: float  # Width (0-1)
-    height: float # Height (0-1)
+    """Bounding box in percentage coordinates (0-100 range).
+
+    All coordinates are percentages of the frame dimensions:
+    - x=25 means 25% from the left edge
+    - y=10 means 10% from the top edge
+    - width=50 means spanning 50% of frame width
+    - height=30 means spanning 30% of frame height
+    """
+    x: float      # Left edge (0-100 percentage)
+    y: float      # Top edge (0-100 percentage)
+    width: float  # Width (0-100 percentage)
+    height: float # Height (0-100 percentage)
 
     @property
     def x2(self) -> float:
@@ -36,12 +43,25 @@ class BoundingBox:
         return (self.x + self.width / 2, self.y + self.height / 2)
 
     def to_pixels(self, frame_width: int, frame_height: int) -> tuple[int, int, int, int]:
-        """Convert to pixel coordinates (x, y, width, height)."""
+        """Convert percentage coordinates to pixel coordinates (x, y, width, height).
+
+        Since coordinates are stored as 0-100 percentages, we divide by 100
+        before multiplying by frame dimensions.
+        """
         return (
-            int(self.x * frame_width),
-            int(self.y * frame_height),
-            int(self.width * frame_width),
-            int(self.height * frame_height),
+            int((self.x / 100) * frame_width),
+            int((self.y / 100) * frame_height),
+            int((self.width / 100) * frame_width),
+            int((self.height / 100) * frame_height),
+        )
+
+    def clamp(self) -> 'BoundingBox':
+        """Return a new BoundingBox with coordinates clamped to valid 0-100 range."""
+        return BoundingBox(
+            x=max(0, min(100, self.x)),
+            y=max(0, min(100, self.y)),
+            width=max(0, min(100 - max(0, self.x), self.width)),
+            height=max(0, min(100 - max(0, self.y), self.height)),
         )
 
 
@@ -97,6 +117,12 @@ class GoogleVisionClient:
         Returns:
             FrameAnalysis with detected elements
         """
+        from PIL import Image as PILImage
+
+        # Get image dimensions for coordinate normalization
+        with PILImage.open(image_path) as img:
+            img_width, img_height = img.size
+
         with open(image_path, "rb") as f:
             content = f.read()
 
@@ -115,7 +141,7 @@ class GoogleVisionClient:
         if response.error.message:
             raise Exception(f"Vision API error: {response.error.message}")
 
-        return self._parse_response(response, frame_time=0.0)
+        return self._parse_response(response, frame_time=0.0, img_width=img_width, img_height=img_height)
 
     def analyze_video_frames(
         self,
@@ -260,13 +286,22 @@ class GoogleVisionClient:
         self,
         response: vision.AnnotateImageResponse,
         frame_time: float,
+        img_width: int = 1920,
+        img_height: int = 1080,
     ) -> FrameAnalysis:
-        """Parse Vision API response into FrameAnalysis."""
+        """Parse Vision API response into FrameAnalysis.
+
+        Args:
+            response: Vision API response
+            frame_time: Time in video (seconds)
+            img_width: Image width for normalizing text/logo coords (pixels to 0-1)
+            img_height: Image height for normalizing text/logo coords (pixels to 0-1)
+        """
         objects = []
         texts = []
         logos = []
 
-        # Parse object localizations
+        # Parse object localizations (normalized_vertices are 0-1, convert to 0-100 percentage)
         for obj in response.localized_object_annotations:
             vertices = obj.bounding_poly.normalized_vertices
             if len(vertices) >= 4:
@@ -279,16 +314,18 @@ class GoogleVisionClient:
                     name=obj.name,
                     confidence=obj.score,
                     bounding_box=BoundingBox(
-                        x=x_min,
-                        y=y_min,
-                        width=x_max - x_min,
-                        height=y_max - y_min,
+                        x=100 * x_min,           # Percentage (0-100)
+                        y=100 * y_min,           # Percentage (0-100)
+                        width=100 * (x_max - x_min),   # Percentage (0-100)
+                        height=100 * (y_max - y_min),  # Percentage (0-100)
                     ),
                     frame_time=frame_time,
                 )
                 objects.append(detected)
 
         # Parse text annotations
+        # NOTE: text_annotations returns PIXEL coordinates, not normalized!
+        # We must normalize them to 0-1 range using image dimensions
         if response.text_annotations:
             # First annotation is the full text, rest are individual words/blocks
             for i, text_ann in enumerate(response.text_annotations):
@@ -297,41 +334,52 @@ class GoogleVisionClient:
 
                 vertices = text_ann.bounding_poly.vertices
                 if len(vertices) >= 4:
-                    # Get image dimensions from context if available
-                    # For now, use normalized coordinates based on vertex positions
+                    # Get pixel coordinates
                     x_coords = [v.x for v in vertices]
                     y_coords = [v.y for v in vertices]
 
-                    # These are pixel coordinates, we need to normalize them
-                    # We'll handle this when we know the image dimensions
+                    # Normalize pixel coordinates to 0-1 range
+                    x_min_px = min(x_coords)
+                    y_min_px = min(y_coords)
+                    width_px = max(x_coords) - x_min_px
+                    height_px = max(y_coords) - y_min_px
+
                     detected = DetectedText(
                         text=text_ann.description,
                         confidence=0.9,  # Vision API doesn't provide confidence for text
                         bounding_box=BoundingBox(
-                            x=min(x_coords),
-                            y=min(y_coords),
-                            width=max(x_coords) - min(x_coords),
-                            height=max(y_coords) - min(y_coords),
+                            x=100 * x_min_px / img_width,      # Percentage (0-100)
+                            y=100 * y_min_px / img_height,     # Percentage (0-100)
+                            width=100 * width_px / img_width,  # Percentage (0-100)
+                            height=100 * height_px / img_height,  # Percentage (0-100)
                         ),
                         frame_time=frame_time,
                     )
                     texts.append(detected)
 
         # Parse logo detections
+        # NOTE: logo_annotations also returns PIXEL coordinates, not normalized!
         for logo_ann in response.logo_annotations:
             vertices = logo_ann.bounding_poly.vertices
             if len(vertices) >= 4:
+                # Get pixel coordinates
                 x_coords = [v.x for v in vertices]
                 y_coords = [v.y for v in vertices]
+
+                # Normalize pixel coordinates to 0-1 range
+                x_min_px = min(x_coords)
+                y_min_px = min(y_coords)
+                width_px = max(x_coords) - x_min_px
+                height_px = max(y_coords) - y_min_px
 
                 detected = DetectedObject(
                     name=logo_ann.description,
                     confidence=logo_ann.score,
                     bounding_box=BoundingBox(
-                        x=min(x_coords),
-                        y=min(y_coords),
-                        width=max(x_coords) - min(x_coords),
-                        height=max(y_coords) - min(y_coords),
+                        x=100 * x_min_px / img_width,      # Percentage (0-100)
+                        y=100 * y_min_px / img_height,     # Percentage (0-100)
+                        width=100 * width_px / img_width,  # Percentage (0-100)
+                        height=100 * height_px / img_height,  # Percentage (0-100)
                     ),
                     frame_time=frame_time,
                 )

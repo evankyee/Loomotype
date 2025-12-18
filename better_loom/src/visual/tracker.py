@@ -14,14 +14,23 @@ from loguru import logger
 
 @dataclass
 class BoundingBox:
-    """A bounding box with position and size."""
-    x: float      # Top-left x (0-1 relative)
-    y: float      # Top-left y (0-1 relative)
-    width: float  # Width (0-1 relative)
-    height: float # Height (0-1 relative)
+    """A bounding box with normalized coordinates (0-1 range).
+
+    This BoundingBox uses normalized coordinates where:
+    - x=0.25 means 25% from the left edge
+    - y=0.10 means 10% from the top edge
+    - width=0.50 means spanning 50% of frame width
+    - height=0.30 means spanning 30% of frame height
+
+    Note: This is different from google_vision.BoundingBox which uses 0-100 percentages.
+    """
+    x: float      # Top-left x (0-1 normalized)
+    y: float      # Top-left y (0-1 normalized)
+    width: float  # Width (0-1 normalized)
+    height: float # Height (0-1 normalized)
 
     def to_pixels(self, frame_width: int, frame_height: int) -> tuple[int, int, int, int]:
-        """Convert to pixel coordinates."""
+        """Convert normalized coordinates to pixel coordinates."""
         return (
             int(self.x * frame_width),
             int(self.y * frame_height),
@@ -37,6 +46,15 @@ class BoundingBox:
             y=y / frame_height,
             width=w / frame_width,
             height=h / frame_height,
+        )
+
+    def clamp(self) -> 'BoundingBox':
+        """Return a new BoundingBox with coordinates clamped to valid 0-1 range."""
+        return BoundingBox(
+            x=max(0, min(1, self.x)),
+            y=max(0, min(1, self.y)),
+            width=max(0, min(1 - max(0, self.x), self.width)),
+            height=max(0, min(1 - max(0, self.y), self.height)),
         )
 
 

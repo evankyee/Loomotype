@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { Timeline } from './Timeline';
 import { TranscriptEditor } from './TranscriptEditor';
 import { VisualSelector } from './VisualSelector';
+import { DetectionPanel } from './DetectionPanel';
 import { useEditorStore } from '@/lib/store';
 import { api } from '@/lib/api';
 
@@ -22,9 +23,13 @@ export interface TranscriptWord {
 
 export interface VisualSelection {
   id: string;
+  /** X position as percentage (0-100) of video frame width */
   x: number;
+  /** Y position as percentage (0-100) of video frame height */
   y: number;
+  /** Width as percentage (0-100) of video frame width */
   width: number;
+  /** Height as percentage (0-100) of video frame height */
   height: number;
   startTime: number;
   endTime: number;
@@ -52,6 +57,9 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
   const [selectionMode, setSelectionMode] = useState<'none' | 'visual' | 'transcript'>('none');
   const [visualSelections, setVisualSelections] = useState<VisualSelection[]>([]);
 
+  // Highlight state for bidirectional sync between panel and video overlay
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+
   // Render state
   const [isRendering, setIsRendering] = useState(false);
   const [renderProgress, setRenderProgress] = useState(0);
@@ -62,6 +70,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [isPreviewMode, setIsPreviewMode] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [previewError, setPreviewError] = useState<string | null>(null);
 
   // Use real transcript from store (Google Chirp 3)
   const {
@@ -144,6 +153,18 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     if (videoRef.current) {
       setCurrentTime(videoRef.current.currentTime);
     }
+  }, []);
+
+  // Handle video load errors (especially for preview)
+  const handleVideoError = useCallback(() => {
+    if (isPreviewMode) {
+      setPreviewError('Failed to load preview video. The render may have failed.');
+    }
+  }, [isPreviewMode]);
+
+  // Clear preview error when preview URL changes (new preview loaded)
+  const handlePreviewLoaded = useCallback(() => {
+    setPreviewError(null);
   }, []);
 
   const togglePlay = useCallback(() => {
@@ -375,6 +396,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
             // Switch to preview mode - show rendered video in editor
             const preview = api.getPreviewUrl(job.job_id);
             setPreviewUrl(preview);
+            setPreviewError(null);  // Clear any previous preview error
             setIsPreviewMode(true);
             // Pause and reset to start for preview
             if (videoRef.current) {
@@ -424,74 +446,106 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     setIsPreviewMode(false);
     setPreviewUrl(null);
     setRenderJobId(null);
+    setPreviewError(null);
     // Video will automatically switch back to original URL
   }, []);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
-      {/* Video container with visual selector overlay */}
-      <div className="flex-1 flex items-center justify-center bg-black relative">
-        <div className="relative max-w-full max-h-full">
-          <video
-            ref={videoRef}
-            src={isPreviewMode && previewUrl ? previewUrl : videoUrl}
-            className="max-w-full max-h-[calc(100vh-350px)]"
-            onLoadedMetadata={handleLoadedMetadata}
-            onLoadedData={handleLoadedData}
-            onDurationChange={handleDurationChange}
-            onTimeUpdate={handleTimeUpdate}
-            onEnded={() => setIsPlaying(false)}
-            onClick={selectionMode === 'none' ? togglePlay : undefined}
-          />
-
-          {/* Preview mode indicator and controls */}
-          {isPreviewMode && (
-            <div className="absolute top-4 left-4 right-4 flex items-center justify-between">
-              <div className="bg-green-600 text-white px-3 py-1 rounded-full text-sm font-medium">
-                Preview Mode
-              </div>
-              <div className="flex gap-2">
-                <button
-                  onClick={handleDiscardPreview}
-                  className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg text-sm font-medium transition-colors"
-                >
-                  Discard
-                </button>
-                <button
-                  onClick={handleSavePreview}
-                  disabled={isSaving}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium transition-colors"
-                >
-                  {isSaving ? 'Saving...' : 'Save Video'}
-                </button>
-              </div>
-            </div>
-          )}
-
-          {selectionMode === 'visual' && (
-            <VisualSelector
-              videoRef={videoRef}
-              currentTime={currentTime}
-              selections={visualSelections}
-              onAddSelection={handleAddVisualSelection}
-              onUpdateSelection={handleUpdateVisualSelection}
-              onDeleteSelection={handleDeleteVisualSelection}
+      {/* Main content area with video and detection panel */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Video container with visual selector overlay */}
+        <div className="flex-1 flex items-center justify-center bg-black relative">
+          {/* inline-block ensures this wrapper shrinks to exactly fit the video element,
+              so the VisualSelector overlay (using inset-0) perfectly covers only the video */}
+          <div className="relative inline-block">
+            <video
+              ref={videoRef}
+              src={isPreviewMode && previewUrl ? previewUrl : videoUrl}
+              className="max-w-full max-h-[calc(100vh-350px)] block"
+              onLoadedMetadata={handleLoadedMetadata}
+              onLoadedData={(e) => { handleLoadedData(); if (isPreviewMode) handlePreviewLoaded(); }}
+              onDurationChange={handleDurationChange}
+              onTimeUpdate={handleTimeUpdate}
+              onEnded={() => setIsPlaying(false)}
+              onError={handleVideoError}
+              onClick={selectionMode === 'none' ? togglePlay : undefined}
             />
+
+            {/* Preview mode indicator and controls */}
+            {isPreviewMode && (
+              <div className="absolute top-4 left-4 right-4 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <div className="bg-green-600 text-white px-3 py-1 rounded-full text-sm font-medium">
+                    Preview Mode
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={handleDiscardPreview}
+                      className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg text-sm font-medium transition-colors"
+                    >
+                      Discard
+                    </button>
+                    <button
+                      onClick={handleSavePreview}
+                      disabled={isSaving || !!previewError}
+                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium transition-colors"
+                    >
+                      {isSaving ? 'Saving...' : 'Save Video'}
+                    </button>
+                  </div>
+                </div>
+                {/* Preview error message */}
+                {previewError && (
+                  <div className="bg-red-600/90 text-white px-3 py-2 rounded-lg text-sm">
+                    {previewError}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Only show visual selector when NOT in preview mode */}
+            {selectionMode === 'visual' && !isPreviewMode && (
+              <VisualSelector
+                videoRef={videoRef}
+                currentTime={currentTime}
+                selections={visualSelections}
+                onAddSelection={handleAddVisualSelection}
+                onUpdateSelection={handleUpdateVisualSelection}
+                onDeleteSelection={handleDeleteVisualSelection}
+                highlightedId={highlightedId}
+                onHighlight={setHighlightedId}
+                showDetectionBoxes={true}
+              />
+            )}
+          </div>
+
+          {/* Play/Pause overlay - hidden in selection mode */}
+          {!isPlaying && selectionMode === 'none' && (
+            <button
+              onClick={togglePlay}
+              className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 hover:opacity-100 transition-opacity"
+            >
+              <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
+                <svg className="w-10 h-10 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+                  <path d="M8 5v14l11-7z" />
+                </svg>
+              </div>
+            </button>
           )}
         </div>
 
-        {/* Play/Pause overlay - hidden in selection mode */}
-        {!isPlaying && selectionMode === 'none' && (
-          <button
-            onClick={togglePlay}
-            className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 hover:opacity-100 transition-opacity"
-          >
-            <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
-              <svg className="w-10 h-10 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
-              </svg>
-            </div>
-          </button>
+        {/* Detection Panel - shown when in visual selection mode (hidden during preview) */}
+        {selectionMode === 'visual' && !isPreviewMode && (
+          <DetectionPanel
+            currentTime={currentTime}
+            selections={visualSelections}
+            onAddSelection={handleAddVisualSelection}
+            onUpdateSelection={handleUpdateVisualSelection}
+            onDeleteSelection={handleDeleteVisualSelection}
+            highlightedId={highlightedId}
+            onHighlight={setHighlightedId}
+          />
         )}
       </div>
 

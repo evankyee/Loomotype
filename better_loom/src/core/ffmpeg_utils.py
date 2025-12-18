@@ -332,6 +332,7 @@ class FFmpegProcessor:
                 # Normalize audio sample rate to 48000 Hz to handle Sync Labs output (44100 Hz)
                 # Force keyframes every 1 second for smooth browser playback
                 # Force 30fps output to prevent fps metadata corruption
+                # Use faststart for progressive video loading (plays while downloading)
                 args = [
                     "-f", "concat",
                     "-safe", "0",
@@ -345,15 +346,18 @@ class FFmpegProcessor:
                     "-c:a", "aac",
                     "-ar", "48000",  # Normalize audio sample rate
                     "-b:a", "192k",
+                    "-movflags", "+faststart",  # Enable progressive playback
                     str(output_path),
                 ]
             else:
                 # Stream copy (fast but requires compatible segments)
+                # Still use faststart for progressive playback
                 args = [
                     "-f", "concat",
                     "-safe", "0",
                     "-i", str(concat_file),
                     "-c", "copy",
+                    "-movflags", "+faststart",
                     str(output_path),
                 ]
 

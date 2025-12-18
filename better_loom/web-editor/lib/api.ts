@@ -44,9 +44,13 @@ export interface DetectedObject {
   id: string;
   name: string;
   confidence: number;
+  /** X position as percentage (0-100) of frame width */
   x: number;
+  /** Y position as percentage (0-100) of frame height */
   y: number;
+  /** Width as percentage (0-100) of frame width */
   width: number;
+  /** Height as percentage (0-100) of frame height */
   height: number;
   timestamp: number;
 }
@@ -55,9 +59,13 @@ export interface DetectedText {
   id: string;
   text: string;
   confidence: number;
+  /** X position as percentage (0-100) of frame width */
   x: number;
+  /** Y position as percentage (0-100) of frame height */
   y: number;
+  /** Width as percentage (0-100) of frame width */
   width: number;
+  /** Height as percentage (0-100) of frame height */
   height: number;
   timestamp: number;
 }
@@ -79,6 +87,7 @@ export interface VoiceCloneResponse {
   voice_id: string;
   voiceId?: string; // alias for compatibility
   name: string;
+  method?: 'PVC' | 'IVC';  // Professional or Instant voice clone
   status: 'pending' | 'processing' | 'ready' | 'failed';
 }
 
@@ -287,9 +296,14 @@ class ApiService {
     return this.request<Voice[]>('/voices');
   }
 
-  async cloneVoice(videoId: string, name: string): Promise<VoiceCloneResponse> {
+  async cloneVoice(
+    videoId: string,
+    name: string,
+    method: 'pvc' | 'ivc' = 'pvc'  // PVC = Pro (highest quality), IVC = Instant (faster)
+  ): Promise<VoiceCloneResponse> {
     const formData = new FormData();
     formData.append('name', name);
+    formData.append('method', method);
 
     const response = await fetch(`${API_BASE}/videos/${videoId}/clone-voice`, {
       method: 'POST',
@@ -306,6 +320,7 @@ class ApiService {
       voice_id: data.voice_id,
       voiceId: data.voice_id,
       name: data.name,
+      method: data.method,  // 'PVC' or 'IVC'
       status: 'ready',
     };
   }

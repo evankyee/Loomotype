@@ -146,16 +146,79 @@ class VisualReplacer:
             height=img.shape[0],
         )
 
+    def sample_background_color(
+        self,
+        frame: np.ndarray,
+        bbox: BoundingBox,
+        sample_edges: bool = True,
+    ) -> tuple[int, int, int]:
+        """
+        Sample the dominant background color from a region.
+
+        If sample_edges is True, samples from the edges of the region
+        (where background is more likely) rather than the center (where text is).
+
+        Returns (R, G, B) color tuple.
+        """
+        frame_h, frame_w = frame.shape[:2]
+        x, y, w, h = bbox.to_pixels(frame_w, frame_h)
+
+        # Clamp to frame bounds
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(frame_w, x + w)
+        y2 = min(frame_h, y + h)
+
+        if x2 <= x1 or y2 <= y1:
+            return (128, 128, 128)  # Default gray
+
+        roi = frame[y1:y2, x1:x2]
+        roi_h, roi_w = roi.shape[:2]
+
+        if sample_edges and roi_h > 4 and roi_w > 4:
+            # Sample from corners and edges (avoid center where text likely is)
+            edge_pixels = []
+            edge_thickness = max(2, min(roi_h, roi_w) // 8)  # 2-8 pixels
+
+            # Top edge
+            edge_pixels.extend(roi[:edge_thickness, :, :3].reshape(-1, 3))
+            # Bottom edge
+            edge_pixels.extend(roi[-edge_thickness:, :, :3].reshape(-1, 3))
+            # Left edge (excluding corners already counted)
+            edge_pixels.extend(roi[edge_thickness:-edge_thickness, :edge_thickness, :3].reshape(-1, 3))
+            # Right edge (excluding corners already counted)
+            edge_pixels.extend(roi[edge_thickness:-edge_thickness, -edge_thickness:, :3].reshape(-1, 3))
+
+            if edge_pixels:
+                edge_array = np.array(edge_pixels)
+                mean_color = np.mean(edge_array, axis=0)
+                # Convert BGR to RGB
+                return (int(mean_color[2]), int(mean_color[1]), int(mean_color[0]))
+
+        # Fallback: sample entire region
+        mean_color = cv2.mean(roi[:, :, :3])
+        # Convert BGR to RGB
+        return (int(mean_color[2]), int(mean_color[1]), int(mean_color[0]))
+
     def composite_frame(
         self,
         frame: np.ndarray,
         asset: ReplacementAsset,
         bbox: BoundingBox,
+        fill_background: bool = True,
+        bg_color: tuple[int, int, int] = None,
     ) -> np.ndarray:
         """
         Composite a replacement asset onto a frame.
 
         Handles alpha blending for smooth edges.
+
+        Args:
+            frame: The video frame to modify
+            asset: The replacement asset to overlay
+            bbox: Bounding box for placement
+            fill_background: If True, fill the region with bg_color first
+            bg_color: Background color (R, G, B) to fill before compositing
         """
         frame_h, frame_w = frame.shape[:2]
 
@@ -179,6 +242,14 @@ class VisualReplacer:
 
         if ax2 <= ax1 or ay2 <= ay1:
             return frame  # Completely out of frame
+
+        # Fill background first to cover original content
+        if fill_background:
+            if bg_color is None:
+                # Sample background from current region
+                bg_color = self.sample_background_color(frame, bbox)
+            # Fill with background color (convert RGB to BGR for OpenCV)
+            frame[y1:y2, x1:x2] = (bg_color[2], bg_color[1], bg_color[0])
 
         # Extract regions
         roi = frame[y1:y2, x1:x2]
@@ -227,14 +298,43 @@ class VisualReplacer:
         if not cap.isOpened():
             raise RuntimeError(f"Cannot open video: {video_path}")
 
-        # Get video properties
-        fps = cap.get(cv2.CAP_PROP_FPS)
+        # Get video properties from OpenCV
+        cv_fps = cap.get(cv2.CAP_PROP_FPS)
         frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+        # Use ffprobe to get accurate fps (OpenCV returns 1000 for WebM files)
+        from ..core.video_info import get_video_info
+        try:
+            video_info = get_video_info(video_path)
+            fps = video_info.fps
+            duration = video_info.duration
+
+            # Sanity check: if fps seems wrong (>100), calculate from duration
+            if fps > 100 or fps <= 0:
+                # Count actual frames first
+                actual_frame_count = 0
+                while True:
+                    ret, _ = cap.read()
+                    if not ret:
+                        break
+                    actual_frame_count += 1
+                cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to start
+
+                if duration > 0 and actual_frame_count > 0:
+                    fps = actual_frame_count / duration
+                    total_frames = actual_frame_count
+                    logger.info(f"Calculated fps from duration: {fps:.2f} fps ({actual_frame_count} frames / {duration:.2f}s)")
+                else:
+                    fps = 30.0  # Fallback to 30fps
+                    logger.warning(f"Using fallback fps: {fps}")
+        except Exception as e:
+            logger.warning(f"Could not get video info from ffprobe: {e}, using OpenCV fps")
+            fps = cv_fps if cv_fps > 0 and cv_fps < 100 else 30.0
+
         logger.info(
-            f"Processing video: {frame_width}x{frame_height} @ {fps}fps, "
+            f"Processing video: {frame_width}x{frame_height} @ {fps:.2f}fps, "
             f"{total_frames} frames"
         )
 
@@ -258,6 +358,9 @@ class VisualReplacer:
         # Create temp file for frames
         temp_dir = Path(tempfile.mkdtemp())
         frames_pattern = temp_dir / "frame_%06d.png"
+
+        # Cache for background colors (sampled from first frame where segment appears)
+        bg_colors: dict[str, tuple[int, int, int]] = {}
 
         # Process frames
         frame_num = 0
@@ -296,7 +399,16 @@ class VisualReplacer:
                             width=segment.width, height=segment.height
                         )
 
-                    frame = self.composite_frame(frame, asset, bbox)
+                    # Sample and cache background color on first appearance
+                    if segment.id not in bg_colors:
+                        bg_colors[segment.id] = self.sample_background_color(frame, bbox)
+                        logger.debug(f"Sampled background color for {segment.id}: RGB{bg_colors[segment.id]}")
+
+                    frame = self.composite_frame(
+                        frame, asset, bbox,
+                        fill_background=True,
+                        bg_color=bg_colors[segment.id]
+                    )
 
             # Save frame
             frame_path = str(frames_pattern) % frame_num
@@ -305,20 +417,51 @@ class VisualReplacer:
 
         cap.release()
 
-        # Encode frames to video with FFmpeg
+        # Encode frames to video with FFmpeg, preserving audio from original
         logger.info("Encoding output video")
-        (
-            ffmpeg_lib
-            .input(str(temp_dir / "frame_%06d.png"), framerate=fps)
-            .output(
-                str(output_path),
-                vcodec="libx264",
-                crf=18,
-                pix_fmt="yuv420p",
+
+        # Check if original has audio
+        from ..core.video_info import get_video_info
+        try:
+            orig_info = get_video_info(video_path)
+            has_audio = orig_info.audio_codec is not None
+        except Exception:
+            has_audio = False
+
+        if has_audio:
+            # Combine new video frames with original audio
+            frames_input = ffmpeg_lib.input(str(temp_dir / "frame_%06d.png"), framerate=fps)
+            audio_input = ffmpeg_lib.input(str(video_path)).audio
+
+            (
+                ffmpeg_lib
+                .output(
+                    frames_input,
+                    audio_input,
+                    str(output_path),
+                    vcodec="libx264",
+                    acodec="aac",
+                    crf=18,
+                    pix_fmt="yuv420p",
+                    shortest=None,  # End when shortest stream ends
+                )
+                .overwrite_output()
+                .run(quiet=True)
             )
-            .overwrite_output()
-            .run(quiet=True)
-        )
+        else:
+            # No audio, just encode video
+            (
+                ffmpeg_lib
+                .input(str(temp_dir / "frame_%06d.png"), framerate=fps)
+                .output(
+                    str(output_path),
+                    vcodec="libx264",
+                    crf=18,
+                    pix_fmt="yuv420p",
+                )
+                .overwrite_output()
+                .run(quiet=True)
+            )
 
         # Clean up temp frames
         import shutil

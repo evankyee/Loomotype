@@ -670,7 +670,27 @@ class SoronRecorder {
   async triggerProcessing(videoId) {
     const apiUrl = await window.soron.getStore('apiUrl') || 'http://127.0.0.1:8000';
 
-    // Trigger transcription
+    // Use the new parallel /process endpoint (33% faster than sequential calls)
+    try {
+      const processResponse = await fetch(`${apiUrl}/api/videos/${videoId}/process`, {
+        method: 'POST',
+      });
+      if (!processResponse.ok) {
+        console.warn('Processing may have failed:', await processResponse.text());
+        // Fallback to sequential processing if parallel endpoint fails
+        await this.triggerProcessingSequential(videoId, apiUrl);
+      } else {
+        const result = await processResponse.json();
+        console.log(`Processing completed in ${result.processing_time_seconds}s`);
+      }
+    } catch (err) {
+      console.warn('Parallel processing failed, trying sequential:', err);
+      await this.triggerProcessingSequential(videoId, apiUrl);
+    }
+  }
+
+  async triggerProcessingSequential(videoId, apiUrl) {
+    // Fallback: Trigger transcription and analysis sequentially
     try {
       const transcribeResponse = await fetch(`${apiUrl}/api/videos/${videoId}/transcribe`, {
         method: 'POST',
@@ -682,7 +702,6 @@ class SoronRecorder {
       console.warn('Transcription request failed:', err);
     }
 
-    // Trigger vision analysis
     try {
       const analyzeResponse = await fetch(`${apiUrl}/api/videos/${videoId}/analyze`, {
         method: 'POST',

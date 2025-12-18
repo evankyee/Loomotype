@@ -11,6 +11,9 @@ interface VisualSelectorProps {
   onAddSelection: (selection: Omit<VisualSelection, 'id'>) => void;
   onUpdateSelection: (id: string, updates: Partial<VisualSelection>) => void;
   onDeleteSelection: (id: string) => void;
+  highlightedId?: string | null;
+  onHighlight?: (id: string | null) => void;
+  showDetectionBoxes?: boolean;
 }
 
 export function VisualSelector({
@@ -20,6 +23,9 @@ export function VisualSelector({
   onAddSelection,
   onUpdateSelection,
   onDeleteSelection,
+  highlightedId,
+  onHighlight,
+  showDetectionBoxes = true,
 }: VisualSelectorProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const [isDrawing, setIsDrawing] = useState(false);
@@ -42,9 +48,34 @@ export function VisualSelector({
     Math.abs(f.timestamp - currentTime) < 1.0 // Within 1 second
   );
 
-  const detectedObjects = currentFrameAnalysis?.objects || [];
-  const detectedTexts = currentFrameAnalysis?.texts || [];
-  const detectedLogos = currentFrameAnalysis?.logos || [];
+  // Helper to validate and clamp coordinates to 0-100 range
+  // Also filters out invalid/malformed detections
+  const validateCoords = <T extends { x: number; y: number; width: number; height: number }>(
+    items: T[]
+  ): T[] => {
+    return items
+      .filter(item => {
+        // Filter out items with invalid coordinates (NaN, undefined, null, or wildly out of range)
+        const isValid =
+          typeof item.x === 'number' && isFinite(item.x) &&
+          typeof item.y === 'number' && isFinite(item.y) &&
+          typeof item.width === 'number' && isFinite(item.width) && item.width > 0 &&
+          typeof item.height === 'number' && isFinite(item.height) && item.height > 0;
+        return isValid;
+      })
+      .map(item => ({
+        ...item,
+        // Clamp coordinates to valid 0-100 range
+        x: Math.max(0, Math.min(100, item.x)),
+        y: Math.max(0, Math.min(100, item.y)),
+        width: Math.max(0.1, Math.min(100 - Math.max(0, item.x), item.width)),
+        height: Math.max(0.1, Math.min(100 - Math.max(0, item.y), item.height)),
+      }));
+  };
+
+  const detectedObjects = validateCoords(currentFrameAnalysis?.objects || []);
+  const detectedTexts = validateCoords(currentFrameAnalysis?.texts || []);
+  const detectedLogos = validateCoords(currentFrameAnalysis?.logos || []);
 
   // Add detected item as a selection
   const handleAddDetectedItem = useCallback((item: {
@@ -140,6 +171,12 @@ export function VisualSelector({
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept keyboard events when typing in input fields
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        return;
+      }
+
       if (e.key === 'Delete' || e.key === 'Backspace') {
         if (selectedSelectionId) {
           e.preventDefault();
@@ -216,64 +253,103 @@ export function VisualSelector({
       </div>
 
       {/* Detected objects from Vision API */}
-      {detectedObjects.map((obj) => (
-        <div
-          key={obj.id}
-          className="absolute border-2 border-dashed border-yellow-400 bg-yellow-400/10 cursor-pointer hover:bg-yellow-400/20 transition-colors"
-          style={{
-            left: `${obj.x}%`,
-            top: `${obj.y}%`,
-            width: `${obj.width}%`,
-            height: `${obj.height}%`,
-          }}
-          onClick={() => handleAddDetectedItem(obj, 'object')}
-          title={`Click to select: ${obj.name}`}
-        >
-          <span className="absolute -top-5 left-0 bg-yellow-400 text-black px-1 py-0.5 rounded text-xs font-medium">
-            {obj.name}
-          </span>
-        </div>
-      ))}
+      {showDetectionBoxes && detectedObjects.map((obj) => {
+        const isHighlighted = highlightedId === obj.id;
+        return (
+          <div
+            key={obj.id}
+            className={`absolute border-2 border-dashed cursor-pointer transition-all ${
+              isHighlighted
+                ? 'border-yellow-400 bg-yellow-400/30 scale-[1.02] z-10'
+                : 'border-yellow-400 bg-yellow-400/10 hover:bg-yellow-400/20'
+            }`}
+            style={{
+              left: `${obj.x}%`,
+              top: `${obj.y}%`,
+              width: `${obj.width}%`,
+              height: `${obj.height}%`,
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              // Toggle highlight - clicking locks the highlight so user can find it in panel
+              onHighlight?.(isHighlighted ? null : obj.id);
+            }}
+            onMouseEnter={() => !highlightedId && onHighlight?.(obj.id)}
+            onMouseLeave={() => !highlightedId && onHighlight?.(null)}
+            title={`Click to highlight: ${obj.name}`}
+          >
+            <span className={`absolute -top-5 left-0 bg-yellow-400 text-black px-1 py-0.5 rounded text-xs font-medium ${isHighlighted ? 'ring-2 ring-white' : ''}`}>
+              {obj.name}
+            </span>
+          </div>
+        );
+      })}
 
       {/* Detected text from Vision API */}
-      {detectedTexts.map((txt) => (
-        <div
-          key={txt.id}
-          className="absolute border-2 border-dashed border-blue-400 bg-blue-400/10 cursor-pointer hover:bg-blue-400/20 transition-colors"
-          style={{
-            left: `${txt.x}%`,
-            top: `${txt.y}%`,
-            width: `${txt.width}%`,
-            height: `${txt.height}%`,
-          }}
-          onClick={() => handleAddDetectedItem(txt, 'text')}
-          title={`Click to select: "${txt.text}"`}
-        >
-          <span className="absolute -top-5 left-0 bg-blue-400 text-black px-1 py-0.5 rounded text-xs font-medium truncate max-w-[100px]">
-            "{txt.text}"
-          </span>
-        </div>
-      ))}
+      {showDetectionBoxes && detectedTexts.map((txt) => {
+        const isHighlighted = highlightedId === txt.id;
+        return (
+          <div
+            key={txt.id}
+            className={`absolute border-2 border-dashed cursor-pointer transition-all ${
+              isHighlighted
+                ? 'border-blue-400 bg-blue-400/30 scale-[1.02] z-10'
+                : 'border-blue-400 bg-blue-400/10 hover:bg-blue-400/20'
+            }`}
+            style={{
+              left: `${txt.x}%`,
+              top: `${txt.y}%`,
+              width: `${txt.width}%`,
+              height: `${txt.height}%`,
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              // Toggle highlight - clicking locks the highlight so user can find it in panel
+              onHighlight?.(isHighlighted ? null : txt.id);
+            }}
+            onMouseEnter={() => !highlightedId && onHighlight?.(txt.id)}
+            onMouseLeave={() => !highlightedId && onHighlight?.(null)}
+            title={`Click to highlight: "${txt.text}"`}
+          >
+            <span className={`absolute -top-5 left-0 bg-blue-400 text-black px-1 py-0.5 rounded text-xs font-medium truncate max-w-[100px] ${isHighlighted ? 'ring-2 ring-white' : ''}`}>
+              "{txt.text}"
+            </span>
+          </div>
+        );
+      })}
 
       {/* Detected logos from Vision API */}
-      {detectedLogos.map((logo) => (
-        <div
-          key={logo.id}
-          className="absolute border-2 border-dashed border-purple-400 bg-purple-400/10 cursor-pointer hover:bg-purple-400/20 transition-colors"
-          style={{
-            left: `${logo.x}%`,
-            top: `${logo.y}%`,
-            width: `${logo.width}%`,
-            height: `${logo.height}%`,
-          }}
-          onClick={() => handleAddDetectedItem(logo, 'logo')}
-          title={`Click to select logo: ${logo.name}`}
-        >
-          <span className="absolute -top-5 left-0 bg-purple-400 text-black px-1 py-0.5 rounded text-xs font-medium">
-            {logo.name}
-          </span>
-        </div>
-      ))}
+      {showDetectionBoxes && detectedLogos.map((logo) => {
+        const isHighlighted = highlightedId === logo.id;
+        return (
+          <div
+            key={logo.id}
+            className={`absolute border-2 border-dashed cursor-pointer transition-all ${
+              isHighlighted
+                ? 'border-purple-400 bg-purple-400/30 scale-[1.02] z-10'
+                : 'border-purple-400 bg-purple-400/10 hover:bg-purple-400/20'
+            }`}
+            style={{
+              left: `${logo.x}%`,
+              top: `${logo.y}%`,
+              width: `${logo.width}%`,
+              height: `${logo.height}%`,
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              // Toggle highlight - clicking locks the highlight so user can find it in panel
+              onHighlight?.(isHighlighted ? null : logo.id);
+            }}
+            onMouseEnter={() => !highlightedId && onHighlight?.(logo.id)}
+            onMouseLeave={() => !highlightedId && onHighlight?.(null)}
+            title={`Click to highlight: ${logo.name}`}
+          >
+            <span className={`absolute -top-5 left-0 bg-purple-400 text-black px-1 py-0.5 rounded text-xs font-medium ${isHighlighted ? 'ring-2 ring-white' : ''}`}>
+              {logo.name}
+            </span>
+          </div>
+        );
+      })}
 
       {/* Current drawing */}
       {currentDraw && (

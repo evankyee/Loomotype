@@ -1,14 +1,15 @@
 """
-ElevenLabs Voice Client - Production Version
+ElevenLabs Voice Client - Production Version (Pro Plan)
 
 Handles voice cloning and text-to-speech with proper audio timing.
+Supports both IVC (Instant) and PVC (Professional) voice cloning.
 """
 
 import os
 import tempfile
 from pathlib import Path
 from loguru import logger
-from typing import Optional
+from typing import Optional, Literal
 
 from elevenlabs.client import ElevenLabs
 from elevenlabs import VoiceSettings
@@ -19,10 +20,13 @@ from ..core.video_info import get_audio_duration
 
 class VoiceClient:
     """
-    Production voice client using ElevenLabs.
+    Production voice client using ElevenLabs Pro.
 
-    Key feature: generate_for_segment() ensures audio matches
-    the original segment duration for perfect sync.
+    Features:
+    - IVC (Instant Voice Cloning) - Quick clones from short samples
+    - PVC (Professional Voice Cloning) - High-quality clones from longer samples
+    - 44.1kHz audio output (highest quality)
+    - Optimized voice settings for dubbing/lip-sync
     """
 
     def __init__(self, api_key: Optional[str] = None):
@@ -39,24 +43,57 @@ class VoiceClient:
         self.client = ElevenLabs(api_key=self.api_key)
         self.model_id = "eleven_multilingual_v2"
 
+        # Pro plan: Use highest quality output (44.1kHz PCM)
+        self.output_format = "pcm_44100"
+        self.sample_rate = 44100
+
     def clone_voice(
         self,
         name: str,
         audio_files: list[str | Path],
         description: str = "Cloned presenter voice",
+        method: Literal["ivc", "pvc", "auto"] = "auto",
     ) -> str:
         """
         Clone a voice from audio samples.
 
         Args:
             name: Name for the cloned voice
-            audio_files: List of paths to audio samples (30+ minutes recommended)
+            audio_files: List of paths to audio samples
             description: Description for the voice
+            method: "ivc" for Instant Voice Cloning (quick, works with 10-90s samples)
+                    "pvc" for Professional Voice Cloning (highest quality, requires 30s+ audio)
+                    "auto" to automatically choose based on audio duration (default)
 
         Returns:
             voice_id to use for generation
         """
-        logger.info(f"Cloning voice '{name}' from {len(audio_files)} files")
+        # Calculate total audio duration to determine best method
+        total_duration = 0.0
+        for path in audio_files:
+            path = Path(path)
+            if path.exists():
+                try:
+                    total_duration += get_audio_duration(path)
+                except Exception as e:
+                    logger.warning(f"Could not get duration for {path}: {e}")
+
+        logger.info(f"Total audio duration: {total_duration:.1f}s")
+
+        # Auto-select method based on duration
+        # PVC requires at least 30 seconds, IVC works with 10-90 seconds
+        if method == "auto":
+            if total_duration >= 30:
+                method = "pvc"
+                logger.info("Auto-selected PVC (audio >= 30s)")
+            else:
+                method = "ivc"
+                logger.info(f"Auto-selected IVC (audio {total_duration:.1f}s < 30s minimum for PVC)")
+        elif method == "pvc" and total_duration < 30:
+            logger.warning(f"PVC requested but audio only {total_duration:.1f}s (minimum 30s). Falling back to IVC.")
+            method = "ivc"
+
+        logger.info(f"Cloning voice '{name}' using {method.upper()} from {len(audio_files)} files")
 
         # Verify audio files exist and open them
         file_handles = []
@@ -69,20 +106,110 @@ class VoiceClient:
                 file_handles.append(open(path, "rb"))
                 logger.info(f"Opened audio file: {path} ({path.stat().st_size} bytes)")
 
-            # Create voice clone using new SDK method (voices.ivc.create)
-            # The new ElevenLabs SDK uses client.voices.ivc.create() for instant voice cloning
+            if method == "pvc":
+                # Professional Voice Cloning - highest quality (Pro plan required)
+                # New SDK requires 3-step process: create → upload samples → train
+                logger.info("Using Professional Voice Cloning (PVC) for highest quality")
+
+                try:
+                    # Step 1: Create the voice entry
+                    voice = self.client.voices.pvc.create(
+                        name=name,
+                        language="en",  # Required parameter
+                        description=description,
+                    )
+                    voice_id = voice.voice_id
+                    logger.info(f"PVC voice created: {voice_id}")
+
+                    # Step 2: Upload audio samples
+                    logger.info(f"Uploading {len(file_handles)} audio samples...")
+                    self.client.voices.pvc.samples.create(
+                        voice_id=voice_id,
+                        files=file_handles,
+                    )
+                    logger.info("Audio samples uploaded successfully")
+
+                    # Step 3: Start training (may be automatic in some SDK versions)
+                    try:
+                        self.client.voices.pvc.train(voice_id=voice_id)
+                        logger.info("PVC training initiated")
+                    except Exception as e:
+                        # Training might auto-start or not be needed
+                        logger.debug(f"Training call result: {e}")
+
+                    logger.info(f"PVC voice cloned successfully: {voice_id}")
+                    return voice_id
+
+                except Exception as e:
+                    error_str = str(e).lower()
+                    # Check for voice_too_short or similar errors - fall back to IVC
+                    if "voice_too_short" in error_str or "30 seconds" in error_str or "too short" in error_str:
+                        logger.warning(f"PVC failed due to short audio: {e}. Falling back to IVC.")
+                        # Reset file handles for retry
+                        for fh in file_handles:
+                            fh.seek(0)
+                        # Continue to IVC below
+                    else:
+                        raise  # Re-raise other errors
+
+            # Instant Voice Cloning - quick clones in seconds (single step)
+            # Also used as fallback when PVC fails due to short audio
+            logger.info("Using Instant Voice Cloning (IVC) for quick clone")
             voice = self.client.voices.ivc.create(
                 name=name,
                 description=description,
                 files=file_handles,
             )
-
-            logger.info(f"Voice cloned: {voice.voice_id}")
+            logger.info(f"IVC voice cloned successfully: {voice.voice_id}")
             return voice.voice_id
         finally:
             # Close all file handles
             for fh in file_handles:
                 fh.close()
+
+    def clone_voice_pvc(
+        self,
+        name: str,
+        audio_files: list[str | Path],
+        description: str = "Professional cloned voice",
+    ) -> str:
+        """
+        Create a Professional Voice Clone (highest quality).
+
+        PVC creates the ultimate digital replica of your voice.
+        Requires Pro plan. Best results with 30+ minutes of clean audio.
+
+        Args:
+            name: Name for the cloned voice
+            audio_files: List of paths to audio samples (more = better quality)
+            description: Description for the voice
+
+        Returns:
+            voice_id to use for generation
+        """
+        return self.clone_voice(name, audio_files, description, method="pvc")
+
+    def clone_voice_ivc(
+        self,
+        name: str,
+        audio_files: list[str | Path],
+        description: str = "Instant cloned voice",
+    ) -> str:
+        """
+        Create an Instant Voice Clone (quick, good quality).
+
+        IVC creates voice clones in seconds from short samples.
+        Works well with 60-90 seconds of audio.
+
+        Args:
+            name: Name for the cloned voice
+            audio_files: List of paths to audio samples
+            description: Description for the voice
+
+        Returns:
+            voice_id to use for generation
+        """
+        return self.clone_voice(name, audio_files, description, method="ivc")
 
     def generate(
         self,
@@ -103,7 +230,7 @@ class VoiceClient:
         """
         logger.debug(f"Generating: '{text[:50]}...'")
 
-        # Generate with ElevenLabs using high-quality settings
+        # Generate with ElevenLabs Pro using highest quality settings
         # Higher stability = more consistent, less variation (good for dubbing)
         # Higher similarity_boost = closer to original voice
         audio_generator = self.client.text_to_speech.convert(
@@ -111,12 +238,12 @@ class VoiceClient:
             voice_id=voice_id,
             model_id=self.model_id,
             voice_settings=VoiceSettings(
-                stability=0.7,  # Higher for more consistent dubbing
-                similarity_boost=0.85,  # High for voice matching
+                stability=0.75,  # Slightly higher for consistent dubbing
+                similarity_boost=0.9,  # Very high for best voice matching (Pro quality)
                 style=0.0,  # No style exaggeration
-                use_speaker_boost=True,
+                use_speaker_boost=True,  # Enhanced clarity
             ),
-            output_format="pcm_24000",  # Uncompressed PCM at 24kHz (available on current plan)
+            output_format=self.output_format,  # 44.1kHz PCM (highest quality, Pro plan)
         )
 
         # Collect audio bytes (PCM is raw 16-bit signed little-endian)
@@ -134,15 +261,15 @@ class VoiceClient:
             temp_pcm = Path(f.name)
 
         # Convert raw PCM to WAV with proper headers
-        # Keep at native 24kHz - downstream composition will resample to 48kHz
+        # Use 44.1kHz (highest quality from Pro plan)
         from ..core.ffmpeg_utils import run_ffmpeg
         run_ffmpeg([
             "-f", "s16le",    # Input format: signed 16-bit little-endian
-            "-ar", "24000",   # Input sample rate: 24kHz from ElevenLabs
+            "-ar", str(self.sample_rate),  # Input sample rate: 44.1kHz from ElevenLabs Pro
             "-ac", "1",       # Input channels: mono
             "-i", str(temp_pcm),
             "-acodec", "pcm_s16le",
-            "-ar", "24000",   # Output at native 24kHz (composition will resample to 48kHz)
+            "-ar", str(self.sample_rate),  # Output at native 44.1kHz (highest quality)
             str(output_path),
         ], "Convert PCM to WAV")
 

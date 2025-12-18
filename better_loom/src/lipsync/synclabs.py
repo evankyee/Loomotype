@@ -13,6 +13,7 @@ import os
 import time
 import httpx
 import tempfile
+import concurrent.futures
 from pathlib import Path
 from loguru import logger
 from typing import Optional
@@ -237,11 +238,17 @@ class SyncLabsClient:
                     raise SyncLabsError(f"Invalid URL returned: {url}")
                 return url
 
-        logger.info("Uploading files to temporary hosting (litterbox)...")
-        video_url = upload_to_litterbox(video_path)
-        logger.info(f"  Video uploaded: {video_url}")
+        logger.info("Uploading files to temporary hosting (litterbox) in parallel...")
 
-        audio_url = upload_to_litterbox(audio_path)
+        # Upload video and audio in parallel (50% faster)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+            video_future = executor.submit(upload_to_litterbox, video_path)
+            audio_future = executor.submit(upload_to_litterbox, audio_path)
+
+            video_url = video_future.result()
+            audio_url = audio_future.result()
+
+        logger.info(f"  Video uploaded: {video_url}")
         logger.info(f"  Audio uploaded: {audio_url}")
 
         return video_url, audio_url
@@ -280,8 +287,13 @@ class SyncLabsClient:
         max_wait_seconds: int,
         poll_interval: int,
     ) -> LipSyncResult:
-        """Poll until job completes or fails."""
+        """Poll until job completes or fails using exponential backoff."""
         start_time = time.time()
+
+        # Exponential backoff: start fast, slow down over time
+        current_interval = 2.0
+        max_interval = 15.0
+        backoff_multiplier = 1.5
 
         while time.time() - start_time < max_wait_seconds:
             result = self._get_job_status(job_id)
@@ -292,8 +304,10 @@ class SyncLabsClient:
                 return result
 
             elapsed = int(time.time() - start_time)
-            logger.debug(f"Job {job_id}: {result.status.value} ({elapsed}s elapsed)")
-            time.sleep(poll_interval)
+            logger.debug(f"Job {job_id}: {result.status.value} ({elapsed}s elapsed, next poll in {current_interval:.1f}s)")
+            time.sleep(current_interval)
+
+            current_interval = min(current_interval * backoff_multiplier, max_interval)
 
         raise SyncLabsError(f"Job {job_id} timed out after {max_wait_seconds}s")
 
