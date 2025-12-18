@@ -99,8 +99,9 @@ body {
   border-radius: 10px;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.12s ease;
+  transition: background 0.1s ease, color 0.1s ease, transform 0.1s ease;
   -webkit-app-region: no-drag;
+  will-change: transform; /* GPU hint for frequent interactions */
 }
 
 .record-btn svg {

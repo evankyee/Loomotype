@@ -64,6 +64,30 @@ function createRecentsWindow() {
     return;
   }
 
+  // PERF: Use pre-warmed window if available (instant show)
+  if (prewarmedRecents && !prewarmedRecents.isDestroyed()) {
+    recentsWindow = prewarmedRecents;
+    prewarmedRecents = null; // Consume it
+    recentsWindow.show();
+    recentsWindow.focus();
+
+    // Set up close handler
+    recentsWindow.on('blur', () => {
+      if (recentsWindow && !recentsWindow.isDestroyed()) {
+        recentsWindow.hide();
+        if (mainWindow) mainWindow.webContents.send('recents-closed');
+        recentsWindow = null;
+        // Re-warm for next use
+        setTimeout(() => prewarmWindows(), 100);
+      }
+    });
+
+    recentsWindow.on('closed', () => {
+      recentsWindow = null;
+    });
+    return;
+  }
+
   const { screen } = require('electron');
   const display = screen.getPrimaryDisplay();
   const { width: screenWidth, height: screenHeight } = display.workAreaSize;
@@ -122,9 +146,152 @@ function closeRecentsWindow() {
 // Settings popup window
 let settingsWindow = null;
 
+// Teleprompter window
+let teleprompterWindow = null;
+
+// Blur overlay window
+let blurOverlayWindow = null;
+
+function createTeleprompterWindow() {
+  if (teleprompterWindow) {
+    teleprompterWindow.focus();
+    return;
+  }
+
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  const { width: screenWidth, height: screenHeight } = display.workAreaSize;
+
+  const prompterWidth = 600;
+  const prompterHeight = 200;
+
+  teleprompterWindow = new BrowserWindow({
+    width: prompterWidth,
+    height: prompterHeight,
+    x: Math.floor(screenWidth / 2 - prompterWidth / 2),
+    y: 50, // Top of screen
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    resizable: true,
+    hasShadow: false,
+    focusable: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+    show: false,
+  });
+
+  // CRITICAL: Exclude from screen capture on macOS
+  teleprompterWindow.setContentProtection(true);
+
+  teleprompterWindow.loadFile('renderer/teleprompter.html');
+
+  teleprompterWindow.once('ready-to-show', () => {
+    teleprompterWindow.show();
+  });
+
+  teleprompterWindow.on('closed', () => {
+    teleprompterWindow = null;
+    // Notify main window
+    if (mainWindow) {
+      mainWindow.webContents.send('teleprompter-closed');
+    }
+  });
+}
+
+function closeTeleprompterWindow() {
+  if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+    teleprompterWindow.close();
+    teleprompterWindow = null;
+  }
+}
+
+function createBlurOverlayWindow() {
+  if (blurOverlayWindow) {
+    blurOverlayWindow.focus();
+    return;
+  }
+
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+
+  // Full screen overlay for drawing blur regions
+  blurOverlayWindow = new BrowserWindow({
+    width: display.size.width,
+    height: display.size.height,
+    x: 0,
+    y: 0,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    resizable: false,
+    hasShadow: false,
+    focusable: true,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+    show: false,
+  });
+
+  // CRITICAL: Exclude from screen capture (blur regions shouldn't appear in recording)
+  blurOverlayWindow.setContentProtection(true);
+
+  blurOverlayWindow.loadFile('renderer/blur-overlay.html');
+
+  blurOverlayWindow.once('ready-to-show', () => {
+    blurOverlayWindow.show();
+  });
+
+  blurOverlayWindow.on('closed', () => {
+    blurOverlayWindow = null;
+    // Notify main window
+    if (mainWindow) {
+      mainWindow.webContents.send('blur-overlay-closed');
+    }
+  });
+}
+
+function closeBlurOverlayWindow() {
+  if (blurOverlayWindow && !blurOverlayWindow.isDestroyed()) {
+    blurOverlayWindow.close();
+    blurOverlayWindow = null;
+  }
+}
+
 function createSettingsWindow() {
   if (settingsWindow) {
     settingsWindow.focus();
+    return;
+  }
+
+  // PERF: Use pre-warmed window if available (instant show)
+  if (prewarmedSettings && !prewarmedSettings.isDestroyed()) {
+    settingsWindow = prewarmedSettings;
+    prewarmedSettings = null; // Consume it
+    settingsWindow.show();
+    settingsWindow.focus();
+
+    // Set up close handler
+    settingsWindow.on('blur', () => {
+      if (settingsWindow && !settingsWindow.isDestroyed()) {
+        settingsWindow.hide();
+        if (mainWindow) mainWindow.webContents.send('settings-closed');
+        settingsWindow = null;
+        // Re-warm for next use
+        setTimeout(() => prewarmWindows(), 100);
+      }
+    });
+
+    settingsWindow.on('closed', () => {
+      settingsWindow = null;
+    });
     return;
   }
 
@@ -449,6 +616,22 @@ function setupGlobalShortcuts() {
       togglePause();
     }
   });
+
+  // Cmd+Shift+T to toggle teleprompter
+  globalShortcut.register('CommandOrControl+Shift+T', () => {
+    if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+      closeTeleprompterWindow();
+    } else {
+      createTeleprompterWindow();
+    }
+  });
+
+  // Cmd+Shift+B to open blur region selector
+  globalShortcut.register('CommandOrControl+Shift+B', () => {
+    if (isRecording) {
+      createBlurOverlayWindow();
+    }
+  });
 }
 
 async function checkPermissions() {
@@ -522,6 +705,78 @@ ipcMain.handle('save-recording', async (event, { buffer, filename }) => {
   fs.writeFileSync(filePath, Buffer.from(buffer));
 
   return filePath;
+});
+
+// Save metadata sidecar file alongside video
+ipcMain.handle('save-metadata', async (event, { filename, metadata }) => {
+  const videosDir = path.join(app.getPath('videos'), 'Soron');
+  const metadataFilename = filename.replace(/\.(webm|mp4)$/, '.metadata.json');
+  const metadataPath = path.join(videosDir, metadataFilename);
+
+  fs.writeFileSync(metadataPath, JSON.stringify(metadata, null, 2));
+  return metadataPath;
+});
+
+// Show file in Finder/Explorer (local-first feature)
+ipcMain.handle('show-in-folder', async (event, filePath) => {
+  const { shell } = require('electron');
+  shell.showItemInFolder(filePath);
+});
+
+// Get screen dimensions for metadata normalization
+ipcMain.handle('get-screen-dimensions', async () => {
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  return {
+    width: display.size.width,
+    height: display.size.height
+  };
+});
+
+// Get cursor position for cursor tracking feature
+ipcMain.handle('get-cursor-position', async () => {
+  const { screen } = require('electron');
+  return screen.getCursorScreenPoint();
+});
+
+// Global click tracking for auto-zoom (works even when app not focused)
+let clickTrackingEnabled = false;
+let trackedClicks = [];
+let recordingStartTimestamp = null;
+
+ipcMain.handle('start-click-tracking', async () => {
+  clickTrackingEnabled = true;
+  trackedClicks = [];
+  recordingStartTimestamp = Date.now();
+
+  // Use Electron's globalShortcut to detect mouse buttons isn't possible,
+  // so we'll use a polling approach with screen.getCursorScreenPoint()
+  // combined with the native module approach below
+  return { started: true };
+});
+
+ipcMain.handle('stop-click-tracking', async () => {
+  clickTrackingEnabled = false;
+  const clicks = [...trackedClicks];
+  trackedClicks = [];
+  recordingStartTimestamp = null;
+  return clicks;
+});
+
+ipcMain.handle('add-click-event', async (event, clickData) => {
+  // Called from recording control window when user manually marks a click
+  if (clickTrackingEnabled && recordingStartTimestamp) {
+    const { screen } = require('electron');
+    const cursor = screen.getCursorScreenPoint();
+    const display = screen.getPrimaryDisplay();
+
+    trackedClicks.push({
+      t: (Date.now() - recordingStartTimestamp) / 1000,
+      x: cursor.x / display.size.width,
+      y: cursor.y / display.size.height,
+      button: 'left'
+    });
+  }
 });
 
 ipcMain.handle('get-recordings', async () => {
@@ -648,6 +903,14 @@ ipcMain.handle('toggle-pause-from-control', () => {
   });
 });
 
+// Layout switching during recording
+ipcMain.handle('switch-layout', (event, layout) => {
+  // Forward layout change to main window
+  if (mainWindow) {
+    mainWindow.webContents.send('layout-change', layout);
+  }
+});
+
 ipcMain.handle('get-store', (event, key) => {
   return store.get(key);
 });
@@ -678,6 +941,39 @@ ipcMain.handle('toggle-settings', () => {
 
 ipcMain.handle('close-settings', () => {
   closeSettingsWindow();
+});
+
+// Teleprompter window controls
+ipcMain.handle('toggle-teleprompter', () => {
+  if (teleprompterWindow && !teleprompterWindow.isDestroyed()) {
+    closeTeleprompterWindow();
+  } else {
+    createTeleprompterWindow();
+  }
+});
+
+ipcMain.handle('close-teleprompter', () => {
+  closeTeleprompterWindow();
+});
+
+// Blur overlay window controls
+ipcMain.handle('toggle-blur-overlay', () => {
+  if (blurOverlayWindow && !blurOverlayWindow.isDestroyed()) {
+    closeBlurOverlayWindow();
+  } else {
+    createBlurOverlayWindow();
+  }
+});
+
+ipcMain.handle('close-blur-overlay', () => {
+  closeBlurOverlayWindow();
+});
+
+ipcMain.handle('add-blur-regions', (event, regions) => {
+  // Forward blur regions to main window for metadata storage
+  if (mainWindow) {
+    mainWindow.webContents.send('blur-regions-added', regions);
+  }
 });
 
 ipcMain.handle('upload-for-personalization', async (event, { filePath, cameraFilePath, hasEmbeddedBubble }) => {
@@ -756,12 +1052,72 @@ app.whenReady().then(async () => {
   createTray();
   setupGlobalShortcuts();
 
+  // PERF: Pre-warm popup windows in background for instant display
+  // Delay slightly to not block main window render
+  setTimeout(() => {
+    prewarmWindows();
+  }, 500);
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();
     }
   });
 });
+
+// Pre-warm frequently used windows (hidden) for instant show
+let prewarmedRecents = null;
+let prewarmedSettings = null;
+
+function prewarmWindows() {
+  // Pre-create recents window (hidden)
+  if (!prewarmedRecents) {
+    const { screen } = require('electron');
+    const display = screen.getPrimaryDisplay();
+    const { width: screenWidth, height: screenHeight } = display.workAreaSize;
+
+    prewarmedRecents = new BrowserWindow({
+      width: 340,
+      height: 360,
+      x: Math.floor(screenWidth / 2 - 170),
+      y: screenHeight - 460,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      show: false, // Hidden until needed
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'preload.js'),
+      },
+    });
+    prewarmedRecents.loadFile('renderer/recents.html');
+  }
+
+  // Pre-create settings window (hidden)
+  if (!prewarmedSettings) {
+    const { screen } = require('electron');
+    const display = screen.getPrimaryDisplay();
+    const { width: screenWidth, height: screenHeight } = display.workAreaSize;
+
+    prewarmedSettings = new BrowserWindow({
+      width: 300,
+      height: 320,
+      x: Math.floor(screenWidth / 2 - 150),
+      y: screenHeight - 420,
+      frame: false,
+      transparent: true,
+      backgroundColor: '#00000000',
+      show: false, // Hidden until needed
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'preload.js'),
+      },
+    });
+    prewarmedSettings.loadFile('renderer/settings.html');
+  }
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {

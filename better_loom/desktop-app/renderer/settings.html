@@ -136,6 +136,71 @@
       margin: 18px 0;
     }
 
+    /* Toggle switch styles */
+    .toggle-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 2px 0;
+    }
+
+    .toggle-row .label-text {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.9);
+    }
+
+    .toggle-row .help-text {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.4);
+      margin-top: 4px;
+    }
+
+    .toggle-switch {
+      position: relative;
+      width: 44px;
+      height: 26px;
+      flex-shrink: 0;
+    }
+
+    .toggle-switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+
+    .toggle-slider {
+      position: absolute;
+      cursor: pointer;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 13px;
+      transition: all 0.2s;
+    }
+
+    .toggle-slider:before {
+      position: absolute;
+      content: "";
+      height: 20px;
+      width: 20px;
+      left: 3px;
+      bottom: 3px;
+      background: white;
+      border-radius: 50%;
+      transition: all 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+    }
+
+    .toggle-switch input:checked + .toggle-slider {
+      background: rgba(52, 199, 89, 0.9);
+    }
+
+    .toggle-switch input:checked + .toggle-slider:before {
+      transform: translateX(18px);
+    }
+
     .version {
       text-align: center;
       font-size: 11px;
@@ -176,6 +241,22 @@
       <div class="divider"></div>
 
       <div class="group">
+        <label>Storage</label>
+        <div class="toggle-row">
+          <div>
+            <div class="label-text">Auto-upload to cloud</div>
+            <div class="help-text">When off, recordings stay on your device</div>
+          </div>
+          <label class="toggle-switch">
+            <input type="checkbox" id="auto-upload" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="group">
         <label>Microphone</label>
         <select id="microphone"></select>
       </div>
@@ -197,9 +278,11 @@
     async function loadSettings() {
       const quality = await window.soron.getStore('videoQuality') || '1080p';
       const framerate = await window.soron.getStore('frameRate') || '30';
+      const autoUpload = await window.soron.getStore('autoUpload');
 
       document.getElementById('quality').value = quality;
       document.getElementById('framerate').value = framerate;
+      document.getElementById('auto-upload').checked = autoUpload !== false; // Default true
 
       // Populate devices
       try {
@@ -238,6 +321,10 @@
 
     document.getElementById('camera').addEventListener('change', (e) => {
       window.soron.setStore('cameraId', e.target.value);
+    });
+
+    document.getElementById('auto-upload').addEventListener('change', (e) => {
+      window.soron.setStore('autoUpload', e.target.checked);
     });
 
     loadSettings();

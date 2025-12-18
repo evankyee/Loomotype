@@ -2568,6 +2568,333 @@ async def process_full_personalization(
 
 
 # ============================================================================
+# PREMIUM FEATURES: Enhancement Processing
+# ============================================================================
+
+class ClickEvent(BaseModel):
+    """A click event for auto-zoom."""
+    t: float  # timestamp in seconds
+    x: float  # normalized 0-1
+    y: float
+    button: str = "left"
+
+
+class BlurRegion(BaseModel):
+    """A region to blur for privacy."""
+    id: str
+    x: float  # normalized 0-1
+    y: float
+    w: float
+    h: float
+    start: float  # start time in seconds
+    end: float    # end time in seconds
+
+
+class CursorPoint(BaseModel):
+    """A cursor position point."""
+    t: float
+    x: float
+    y: float
+
+
+class EnhanceRequest(BaseModel):
+    """Request to apply premium enhancement effects."""
+    clicks: list[ClickEvent] = []
+    blur_regions: list[BlurRegion] = []
+    cursor_path: list[CursorPoint] = []
+    settings: dict = {}  # {autoZoom: bool, cursorEffects: bool, blurEnabled: bool}
+
+
+class FillerWord(BaseModel):
+    """A detected filler word."""
+    id: str
+    type: str  # "filler" or "silence"
+    text: str
+    start: float
+    end: float
+
+
+class DetectFillersResponse(BaseModel):
+    """Response from filler detection."""
+    fillers: list[FillerWord]
+    total_duration: float
+    filler_duration: float
+
+
+class RemoveFillersRequest(BaseModel):
+    """Request to remove specific filler segments."""
+    filler_ids: list[str]  # IDs of fillers to remove
+
+
+@app.post("/api/videos/{video_id}/enhance")
+async def enhance_video(
+    video_id: str,
+    request: EnhanceRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Apply premium enhancement effects to video.
+
+    Effects include:
+    - Auto-zoom on clicks
+    - Privacy blur on regions
+    - Cursor smoothing and effects (coming soon)
+    """
+    if video_id not in videos_store:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video = videos_store[video_id]
+    video_path = Path(video["path"])
+
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    # Create job
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"enhanced_{job_id}.mp4"
+
+    jobs_store[job_id] = {
+        "job_id": job_id,
+        "video_id": video_id,
+        "type": "enhance",
+        "status": "pending",
+        "progress": 0,
+        "output_url": None,
+        "error": None,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    # Start background processing
+    background_tasks.add_task(
+        process_enhance_job,
+        job_id,
+        video_path,
+        output_path,
+        request,
+    )
+
+    return {"job_id": job_id, "status": "pending", "progress": 0}
+
+
+async def process_enhance_job(
+    job_id: str,
+    video_path: Path,
+    output_path: Path,
+    request: EnhanceRequest,
+):
+    """Background task to apply enhancement effects."""
+    try:
+        jobs_store[job_id]["status"] = "processing"
+        jobs_store[job_id]["progress"] = 10
+
+        current_video = video_path
+        temp_files = []
+        settings = request.settings or {}
+
+        # Step 1: Apply zoom effects on clicks
+        if request.clicks and settings.get("autoZoom", True):
+            logger.info(f"Applying zoom effects for {len(request.clicks)} clicks")
+            jobs_store[job_id]["progress"] = 30
+
+            zoom_output = output_path.parent / f"zoom_{job_id}.mp4"
+            FFmpegProcessor.apply_zoom_effects(
+                video_path=current_video,
+                output_path=zoom_output,
+                clicks=[c.model_dump() for c in request.clicks],
+                zoom_factor=1.5,
+                zoom_duration=2.0,
+            )
+            temp_files.append(current_video) if current_video != video_path else None
+            current_video = zoom_output
+
+        # Step 2: Apply blur regions
+        if request.blur_regions and settings.get("blurEnabled", True):
+            logger.info(f"Applying blur to {len(request.blur_regions)} regions")
+            jobs_store[job_id]["progress"] = 60
+
+            blur_output = output_path.parent / f"blur_{job_id}.mp4"
+            FFmpegProcessor.apply_blur_regions(
+                video_path=current_video,
+                output_path=blur_output,
+                regions=[{
+                    'x': r.x,
+                    'y': r.y,
+                    'w': r.w,
+                    'h': r.h,
+                    'start': r.start,
+                    'end': r.end,
+                } for r in request.blur_regions],
+                blur_strength=20,
+            )
+            temp_files.append(current_video) if current_video != video_path else None
+            current_video = blur_output
+
+        # Step 3: Copy final result
+        jobs_store[job_id]["progress"] = 90
+
+        if current_video != output_path:
+            shutil.copy(current_video, output_path)
+
+        # Cleanup temp files
+        for f in temp_files:
+            if f and Path(f).exists() and f != video_path:
+                Path(f).unlink(missing_ok=True)
+
+        jobs_store[job_id]["progress"] = 100
+        jobs_store[job_id]["status"] = "completed"
+        jobs_store[job_id]["output_url"] = f"/api/render/{job_id}/download"
+        jobs_store[job_id]["output_path"] = str(output_path)
+
+        logger.info(f"Enhancement complete: {output_path}")
+
+    except Exception as e:
+        logger.exception("Enhancement failed")
+        jobs_store[job_id]["status"] = "failed"
+        jobs_store[job_id]["error"] = str(e)
+
+
+@app.get("/api/videos/{video_id}/detect-fillers", response_model=DetectFillersResponse)
+async def detect_fillers(video_id: str):
+    """
+    Detect filler words and long silences in video.
+
+    Returns list of detected fillers that user can preview before removal.
+    """
+    if video_id not in videos_store:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video = videos_store[video_id]
+
+    # Check if transcript exists
+    if not video.get("transcript"):
+        raise HTTPException(
+            status_code=400,
+            detail="Video must be transcribed first. Call POST /api/videos/{video_id}/transcribe"
+        )
+
+    try:
+        from ..audio.filler_detection import FillerDetector
+
+        detector = FillerDetector()
+        transcript = video["transcript"]
+        duration = video["duration"]
+
+        fillers = detector.detect_fillers(transcript, duration)
+
+        total_filler_duration = sum(f["end"] - f["start"] for f in fillers)
+
+        # Store fillers with video for later removal
+        video["detected_fillers"] = fillers
+        videos_store[video_id] = video
+
+        return DetectFillersResponse(
+            fillers=[FillerWord(**f) for f in fillers],
+            total_duration=duration,
+            filler_duration=total_filler_duration,
+        )
+
+    except ImportError:
+        raise HTTPException(status_code=500, detail="Filler detection module not available")
+    except Exception as e:
+        logger.exception("Filler detection failed")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/videos/{video_id}/remove-fillers")
+async def remove_fillers(
+    video_id: str,
+    request: RemoveFillersRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Remove selected filler words from video.
+
+    User must call detect-fillers first to get filler IDs.
+    """
+    if video_id not in videos_store:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video = videos_store[video_id]
+    video_path = Path(video["path"])
+
+    if not video.get("detected_fillers"):
+        raise HTTPException(
+            status_code=400,
+            detail="Must detect fillers first. Call GET /api/videos/{video_id}/detect-fillers"
+        )
+
+    # Get fillers to remove
+    all_fillers = {f["id"]: f for f in video["detected_fillers"]}
+    fillers_to_remove = [all_fillers[fid] for fid in request.filler_ids if fid in all_fillers]
+
+    if not fillers_to_remove:
+        raise HTTPException(status_code=400, detail="No valid filler IDs provided")
+
+    # Create job
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"nofiller_{job_id}.mp4"
+
+    jobs_store[job_id] = {
+        "job_id": job_id,
+        "video_id": video_id,
+        "type": "remove_fillers",
+        "status": "pending",
+        "progress": 0,
+        "output_url": None,
+        "error": None,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    # Start background processing
+    background_tasks.add_task(
+        process_remove_fillers_job,
+        job_id,
+        video_path,
+        output_path,
+        fillers_to_remove,
+    )
+
+    return {"job_id": job_id, "status": "pending", "progress": 0, "removing_count": len(fillers_to_remove)}
+
+
+async def process_remove_fillers_job(
+    job_id: str,
+    video_path: Path,
+    output_path: Path,
+    fillers: list[dict],
+):
+    """Background task to remove filler segments."""
+    try:
+        jobs_store[job_id]["status"] = "processing"
+        jobs_store[job_id]["progress"] = 10
+
+        # Convert fillers to cuts format
+        cuts = [{"start": f["start"], "end": f["end"]} for f in fillers]
+
+        logger.info(f"Removing {len(cuts)} filler segments")
+        jobs_store[job_id]["progress"] = 30
+
+        FFmpegProcessor.remove_segments(
+            video_path=video_path,
+            output_path=output_path,
+            cuts=cuts,
+            crossfade_ms=100,
+        )
+
+        jobs_store[job_id]["progress"] = 100
+        jobs_store[job_id]["status"] = "completed"
+        jobs_store[job_id]["output_url"] = f"/api/render/{job_id}/download"
+        jobs_store[job_id]["output_path"] = str(output_path)
+
+        logger.info(f"Filler removal complete: {output_path}")
+
+    except Exception as e:
+        logger.exception("Filler removal failed")
+        jobs_store[job_id]["status"] = "failed"
+        jobs_store[job_id]["error"] = str(e)
+
+
+# ============================================================================
 # Quick test endpoints
 # ============================================================================
 

@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Privacy Blur</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      width: 100vw;
+      height: 100vh;
+      background: transparent;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      cursor: crosshair;
+    }
+
+    .overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0, 0, 0, 0.3);
+    }
+
+    .instructions {
+      position: fixed;
+      top: 20px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(20px);
+      padding: 12px 24px;
+      border-radius: 12px;
+      color: white;
+      font-size: 14px;
+      font-weight: 500;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      z-index: 1000;
+    }
+
+    .instructions svg {
+      width: 18px;
+      height: 18px;
+      opacity: 0.8;
+    }
+
+    .instructions .key {
+      background: rgba(255, 255, 255, 0.2);
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      margin-left: 4px;
+    }
+
+    .selection-box {
+      position: fixed;
+      border: 2px dashed #fff;
+      background: rgba(255, 0, 0, 0.2);
+      pointer-events: none;
+      display: none;
+    }
+
+    .blur-region {
+      position: fixed;
+      background: rgba(0, 100, 255, 0.3);
+      border: 2px solid rgba(0, 150, 255, 0.8);
+      cursor: move;
+    }
+
+    .blur-region:hover {
+      background: rgba(0, 100, 255, 0.4);
+    }
+
+    .blur-region .delete-btn {
+      position: absolute;
+      top: -10px;
+      right: -10px;
+      width: 20px;
+      height: 20px;
+      background: #ef4444;
+      border: none;
+      border-radius: 50%;
+      color: white;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+
+    .blur-region:hover .delete-btn {
+      opacity: 1;
+    }
+
+    .done-btn {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #22c55e;
+      color: white;
+      border: none;
+      padding: 12px 32px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      transition: all 0.15s;
+    }
+
+    .done-btn:hover {
+      background: #16a34a;
+      transform: translateX(-50%) scale(1.02);
+    }
+
+    .done-btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .region-count {
+      position: fixed;
+      bottom: 30px;
+      right: 30px;
+      background: rgba(0, 0, 0, 0.85);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="overlay"></div>
+
+  <div class="instructions">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M3 3h18v18H3zM9 3v18M15 3v18M3 9h18M3 15h18"/>
+    </svg>
+    <span>Click and drag to select blur regions</span>
+    <span class="key">Esc</span> Cancel
+  </div>
+
+  <div class="selection-box" id="selection-box"></div>
+
+  <div id="regions-container"></div>
+
+  <button class="done-btn" id="done-btn">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <polyline points="20 6 9 17 4 12"/>
+    </svg>
+    Apply Blur Regions
+  </button>
+
+  <div class="region-count" id="region-count">0 regions</div>
+
+  <script>
+    let isDrawing = false;
+    let startX = 0;
+    let startY = 0;
+    let regions = [];
+    let regionIdCounter = 0;
+
+    const overlay = document.querySelector('.overlay');
+    const selectionBox = document.getElementById('selection-box');
+    const regionsContainer = document.getElementById('regions-container');
+    const doneBtn = document.getElementById('done-btn');
+    const regionCount = document.getElementById('region-count');
+
+    // Load existing regions if any
+    async function loadExistingRegions() {
+      try {
+        const existing = await window.soron.getStore('pendingBlurRegions');
+        if (existing && Array.isArray(existing)) {
+          existing.forEach(r => {
+            createRegionElement(r);
+            regions.push(r);
+          });
+          updateRegionCount();
+        }
+      } catch (e) {
+        console.log('No existing regions');
+      }
+    }
+    loadExistingRegions();
+
+    // Get screen dimensions
+    const screenWidth = window.screen.width;
+    const screenHeight = window.screen.height;
+
+    // Mouse down - start drawing
+    overlay.addEventListener('mousedown', (e) => {
+      isDrawing = true;
+      startX = e.clientX;
+      startY = e.clientY;
+      selectionBox.style.display = 'block';
+      selectionBox.style.left = startX + 'px';
+      selectionBox.style.top = startY + 'px';
+      selectionBox.style.width = '0px';
+      selectionBox.style.height = '0px';
+    });
+
+    // Mouse move - update selection
+    document.addEventListener('mousemove', (e) => {
+      if (!isDrawing) return;
+
+      const currentX = e.clientX;
+      const currentY = e.clientY;
+
+      const left = Math.min(startX, currentX);
+      const top = Math.min(startY, currentY);
+      const width = Math.abs(currentX - startX);
+      const height = Math.abs(currentY - startY);
+
+      selectionBox.style.left = left + 'px';
+      selectionBox.style.top = top + 'px';
+      selectionBox.style.width = width + 'px';
+      selectionBox.style.height = height + 'px';
+    });
+
+    // Mouse up - finish drawing
+    document.addEventListener('mouseup', (e) => {
+      if (!isDrawing) return;
+      isDrawing = false;
+      selectionBox.style.display = 'none';
+
+      const currentX = e.clientX;
+      const currentY = e.clientY;
+
+      const left = Math.min(startX, currentX);
+      const top = Math.min(startY, currentY);
+      const width = Math.abs(currentX - startX);
+      const height = Math.abs(currentY - startY);
+
+      // Only create region if it's large enough
+      if (width > 10 && height > 10) {
+        const region = {
+          id: 'blur-' + (++regionIdCounter),
+          // Normalized coordinates (0-1)
+          x: left / screenWidth,
+          y: top / screenHeight,
+          w: width / screenWidth,
+          h: height / screenHeight,
+          // Pixel coordinates for display
+          _left: left,
+          _top: top,
+          _width: width,
+          _height: height,
+        };
+
+        regions.push(region);
+        createRegionElement(region);
+        updateRegionCount();
+      }
+    });
+
+    function createRegionElement(region) {
+      const el = document.createElement('div');
+      el.className = 'blur-region';
+      el.id = region.id;
+      el.style.left = (region._left || region.x * screenWidth) + 'px';
+      el.style.top = (region._top || region.y * screenHeight) + 'px';
+      el.style.width = (region._width || region.w * screenWidth) + 'px';
+      el.style.height = (region._height || region.h * screenHeight) + 'px';
+
+      // Delete button
+      const deleteBtn = document.createElement('button');
+      deleteBtn.className = 'delete-btn';
+      deleteBtn.innerHTML = '×';
+      deleteBtn.onclick = (e) => {
+        e.stopPropagation();
+        el.remove();
+        regions = regions.filter(r => r.id !== region.id);
+        updateRegionCount();
+      };
+
+      el.appendChild(deleteBtn);
+      regionsContainer.appendChild(el);
+    }
+
+    function updateRegionCount() {
+      regionCount.textContent = regions.length + ' region' + (regions.length !== 1 ? 's' : '');
+    }
+
+    // Done button - save and close
+    doneBtn.addEventListener('click', async () => {
+      // Convert regions to normalized format for metadata
+      const normalizedRegions = regions.map(r => ({
+        id: r.id,
+        x: r.x,
+        y: r.y,
+        w: r.w,
+        h: r.h,
+        // Start/end will be set when recording stops (full video duration)
+        start: 0,
+        end: null, // null means until end of video
+      }));
+
+      // Send to main process to forward to app.js
+      await window.soron.addBlurRegions(normalizedRegions);
+      window.soron.closeBlurOverlay();
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        window.soron.closeBlurOverlay();
+      }
+    });
+  </script>
+</body>
+</html>

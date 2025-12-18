@@ -8,9 +8,21 @@ contextBridge.exposeInMainWorld('soron', {
   // File operations
   saveRecording: (buffer, filename) =>
     ipcRenderer.invoke('save-recording', { buffer, filename }),
+  saveMetadata: (filename, metadata) =>
+    ipcRenderer.invoke('save-metadata', { filename, metadata }),
   getRecordings: () => ipcRenderer.invoke('get-recordings'),
   openFile: (filePath) => ipcRenderer.invoke('open-file', filePath),
+  showInFolder: (filePath) => ipcRenderer.invoke('show-in-folder', filePath),
   showSaveDialog: () => ipcRenderer.invoke('show-save-dialog'),
+
+  // Screen info for metadata
+  getScreenDimensions: () => ipcRenderer.invoke('get-screen-dimensions'),
+  getCursorPosition: () => ipcRenderer.invoke('get-cursor-position'),
+
+  // Click tracking for auto-zoom
+  startClickTracking: () => ipcRenderer.invoke('start-click-tracking'),
+  stopClickTracking: () => ipcRenderer.invoke('stop-click-tracking'),
+  addClickEvent: () => ipcRenderer.invoke('add-click-event'),
 
   // Recording state
   recordingStarted: (sourceId, includeCamera) => ipcRenderer.invoke('recording-started', sourceId, includeCamera),
@@ -23,6 +35,7 @@ contextBridge.exposeInMainWorld('soron', {
   stopRecording: () => ipcRenderer.invoke('stop-recording-from-control'),
   cancelRecording: () => ipcRenderer.invoke('cancel-recording-from-control'),
   togglePauseFromControl: () => ipcRenderer.invoke('toggle-pause-from-control'),
+  switchLayout: (layout) => ipcRenderer.invoke('switch-layout', layout),
 
   // Settings
   getStore: (key) => ipcRenderer.invoke('get-store', key),
@@ -46,6 +59,11 @@ contextBridge.exposeInMainWorld('soron', {
   closeRecents: () => ipcRenderer.invoke('close-recents'),
   toggleSettings: () => ipcRenderer.invoke('toggle-settings'),
   closeSettings: () => ipcRenderer.invoke('close-settings'),
+  toggleTeleprompter: () => ipcRenderer.invoke('toggle-teleprompter'),
+  closeTeleprompter: () => ipcRenderer.invoke('close-teleprompter'),
+  toggleBlurOverlay: () => ipcRenderer.invoke('toggle-blur-overlay'),
+  closeBlurOverlay: () => ipcRenderer.invoke('close-blur-overlay'),
+  addBlurRegions: (regions) => ipcRenderer.invoke('add-blur-regions', regions),
 
   // Listen for window closed events
   onRecentsClosed: (callback) => {
@@ -55,6 +73,18 @@ contextBridge.exposeInMainWorld('soron', {
   onSettingsClosed: (callback) => {
     ipcRenderer.on('settings-closed', callback);
     return () => ipcRenderer.removeListener('settings-closed', callback);
+  },
+  onTeleprompterClosed: (callback) => {
+    ipcRenderer.on('teleprompter-closed', callback);
+    return () => ipcRenderer.removeListener('teleprompter-closed', callback);
+  },
+  onBlurOverlayClosed: (callback) => {
+    ipcRenderer.on('blur-overlay-closed', callback);
+    return () => ipcRenderer.removeListener('blur-overlay-closed', callback);
+  },
+  onBlurRegionsAdded: (callback) => {
+    ipcRenderer.on('blur-regions-added', (event, regions) => callback(regions));
+    return () => ipcRenderer.removeListener('blur-regions-added', callback);
   },
 
   // Event listeners
@@ -73,6 +103,10 @@ contextBridge.exposeInMainWorld('soron', {
   onOpenSettings: (callback) => {
     ipcRenderer.on('open-settings', callback);
     return () => ipcRenderer.removeListener('open-settings', callback);
+  },
+  onLayoutChange: (callback) => {
+    ipcRenderer.on('layout-change', (event, layout) => callback(layout));
+    return () => ipcRenderer.removeListener('layout-change', callback);
   },
 });
 

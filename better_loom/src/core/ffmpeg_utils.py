@@ -904,3 +904,312 @@ class FFmpegProcessor:
         run_ffmpeg(args, "Overlay camera bubble")
         logger.info(f"Camera bubble overlaid at position {position}")
         return output_path
+
+    # ============================================================
+    # Premium Features: Enhancement Processing
+    # ============================================================
+
+    @staticmethod
+    def apply_zoom_effects(
+        video_path: Path,
+        output_path: Path,
+        clicks: list[dict],
+        zoom_factor: float = 1.5,
+        zoom_duration: float = 2.0,
+        ease_duration: float = 0.3,
+    ) -> Path:
+        """
+        Apply zoom effects at click locations.
+
+        Args:
+            video_path: Source video
+            output_path: Where to save result
+            clicks: List of click events [{t, x, y, button}] with normalized coords
+            zoom_factor: How much to zoom in (1.5 = 150%)
+            zoom_duration: How long to stay zoomed (seconds)
+            ease_duration: Duration of ease in/out (seconds)
+
+        Returns:
+            Path to video with zoom effects
+        """
+        if not clicks:
+            shutil.copy(video_path, output_path)
+            return output_path
+
+        info = get_video_info(video_path)
+        width = info.width
+        height = info.height
+        fps = info.fps or 30
+
+        # Build zoompan filter with proper zoom and pan expressions
+        # zoompan: z=zoom level, x/y=top-left corner of visible area, d=duration per frame
+        # on = output frame number, we need to map time to frames
+
+        zoom_exprs = []
+        x_exprs = []
+        y_exprs = []
+
+        for click in clicks:
+            t = click['t']
+            cx = click['x'] * width   # Click center x in pixels
+            cy = click['y'] * height  # Click center y in pixels
+
+            frame_start = int(t * fps)
+            frame_end = frame_start + int(zoom_duration * fps)
+            ease_frames = int(ease_duration * fps)
+
+            # Zoom expression with easing
+            # Phase 1: ease in (frames start to start+ease)
+            # Phase 2: hold (frames start+ease to end-ease)
+            # Phase 3: ease out (frames end-ease to end)
+            zoom_exprs.append(
+                f"if(between(on,{frame_start},{frame_end}),"
+                f"if(lt(on,{frame_start + ease_frames}),"
+                f"1+({zoom_factor}-1)*(on-{frame_start})/{ease_frames},"
+                f"if(gt(on,{frame_end - ease_frames}),"
+                f"{zoom_factor}-({zoom_factor}-1)*(on-{frame_end - ease_frames})/{ease_frames},"
+                f"{zoom_factor})),0)"
+            )
+
+            # Pan expressions - center on click point
+            # x = click_x - (visible_width / 2) = click_x - (iw / zoom / 2)
+            # Clamp to valid range: 0 to iw - iw/zoom
+            x_exprs.append(
+                f"if(between(on,{frame_start},{frame_end}),"
+                f"max(0,min({cx}-iw/zoom/2,iw-iw/zoom)),0)"
+            )
+            y_exprs.append(
+                f"if(between(on,{frame_start},{frame_end}),"
+                f"max(0,min({cy}-ih/zoom/2,ih-ih/zoom)),0)"
+            )
+
+        # Combine all expressions - take the active one (non-zero)
+        if len(clicks) == 1:
+            zoom_expr = zoom_exprs[0].replace(",0)", f",1)")  # Default zoom=1
+            x_expr = x_exprs[0].replace(",0)", f",iw/2-iw/zoom/2)")  # Default center
+            y_expr = y_exprs[0].replace(",0)", f",ih/2-ih/zoom/2)")
+        else:
+            # Chain multiple zoom regions
+            zoom_expr = "+".join(zoom_exprs)
+            zoom_expr = f"if(gt({zoom_expr},0),{zoom_expr},1)"  # Default to 1 if no zoom active
+
+            x_expr = "+".join(x_exprs)
+            x_expr = f"if(gt({'+'.join(zoom_exprs)},0),{x_expr},iw/2-iw/zoom/2)"
+
+            y_expr = "+".join(y_exprs)
+            y_expr = f"if(gt({'+'.join(zoom_exprs)},0),{y_expr},ih/2-ih/zoom/2)"
+
+        # Build the zoompan filter
+        zoom_filter = (
+            f"zoompan="
+            f"z='{zoom_expr}':"
+            f"x='{x_expr}':"
+            f"y='{y_expr}':"
+            f"d=1:fps={fps}:s={width}x{height}"
+        )
+
+        args = [
+            "-i", str(video_path),
+            "-vf", zoom_filter,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-c:a", "copy",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, f"Apply zoom effects for {len(clicks)} clicks")
+        logger.info(f"Applied zoom effects at {len(clicks)} click locations")
+        return output_path
+
+    @staticmethod
+    def apply_blur_regions(
+        video_path: Path,
+        output_path: Path,
+        regions: list[dict],
+        blur_strength: int = 20,
+    ) -> Path:
+        """
+        Apply blur to specified regions of the video.
+
+        Args:
+            video_path: Source video
+            output_path: Where to save result
+            regions: List of blur regions [{id, x, y, w, h, start, end}]
+                     Coordinates are normalized (0-1)
+            blur_strength: How strong the blur should be (1-100)
+
+        Returns:
+            Path to video with blurred regions
+        """
+        if not regions:
+            shutil.copy(video_path, output_path)
+            return output_path
+
+        info = get_video_info(video_path)
+        width = info.width
+        height = info.height
+
+        # Build filter_complex for all blur regions
+        # Strategy: for each region, crop the area, blur it, overlay back
+        filter_parts = []
+
+        for i, region in enumerate(regions):
+            # Convert normalized coords to pixels
+            rx = int(region['x'] * width)
+            ry = int(region['y'] * height)
+            rw = int(region['w'] * width)
+            rh = int(region['h'] * height)
+            start = region.get('start', 0)
+            end = region.get('end', info.duration)
+
+            # Enable expression for time-limited blur
+            enable = f"enable='between(t,{start},{end})'"
+
+            # Crop region, blur it, then overlay back at same position
+            filter_parts.append(
+                f"[0:v]crop={rw}:{rh}:{rx}:{ry},boxblur={blur_strength}[blur{i}];"
+                f"[tmp{i-1 if i > 0 else '0:v'}][blur{i}]overlay={rx}:{ry}:{enable}[tmp{i}]"
+            )
+
+        # Build final filter_complex string
+        if len(regions) == 1:
+            # Single region - simpler filter
+            r = regions[0]
+            rx = int(r['x'] * width)
+            ry = int(r['y'] * height)
+            rw = int(r['w'] * width)
+            rh = int(r['h'] * height)
+            start = r.get('start', 0)
+            end = r.get('end', info.duration)
+
+            filter_complex = (
+                f"[0:v]split[bg][fg];"
+                f"[fg]crop={rw}:{rh}:{rx}:{ry},boxblur={blur_strength}[blurred];"
+                f"[bg][blurred]overlay={rx}:{ry}:enable='between(t,{start},{end})'"
+            )
+        else:
+            # Multiple regions - chain overlays
+            parts = []
+            for i, region in enumerate(regions):
+                rx = int(region['x'] * width)
+                ry = int(region['y'] * height)
+                rw = int(region['w'] * width)
+                rh = int(region['h'] * height)
+                start = region.get('start', 0)
+                end = region.get('end', info.duration)
+                enable = f"enable='between(t,{start},{end})'"
+
+                input_label = f"v{i-1}" if i > 0 else "0:v"
+                output_label = f"v{i}" if i < len(regions) - 1 else ""
+
+                parts.append(
+                    f"[{input_label}]split[bg{i}][fg{i}];"
+                    f"[fg{i}]crop={rw}:{rh}:{rx}:{ry},boxblur={blur_strength}[blur{i}];"
+                    f"[bg{i}][blur{i}]overlay={rx}:{ry}:{enable}"
+                    + (f"[{output_label}]" if output_label else "")
+                )
+
+            filter_complex = ";".join(parts)
+
+        args = [
+            "-i", str(video_path),
+            "-filter_complex", filter_complex,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-c:a", "copy",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, f"Apply blur to {len(regions)} regions")
+        logger.info(f"Applied blur to {len(regions)} regions")
+        return output_path
+
+    @staticmethod
+    def remove_segments(
+        video_path: Path,
+        output_path: Path,
+        cuts: list[dict],
+        crossfade_ms: int = 100,
+    ) -> Path:
+        """
+        Remove segments from video (for filler word removal).
+
+        Args:
+            video_path: Source video
+            output_path: Where to save result
+            cuts: List of segments to REMOVE [{start, end}] in seconds
+            crossfade_ms: Audio crossfade duration at cut points
+
+        Returns:
+            Path to video with segments removed
+        """
+        if not cuts:
+            shutil.copy(video_path, output_path)
+            return output_path
+
+        info = get_video_info(video_path)
+        duration = info.duration
+
+        # Sort cuts by start time
+        cuts = sorted(cuts, key=lambda x: x['start'])
+
+        # Calculate segments to KEEP (inverse of cuts)
+        keep_segments = []
+        current_time = 0.0
+
+        for cut in cuts:
+            cut_start = cut['start']
+            cut_end = cut['end']
+
+            # Keep segment before this cut
+            if cut_start > current_time:
+                keep_segments.append({
+                    'start': current_time,
+                    'end': cut_start
+                })
+
+            current_time = cut_end
+
+        # Keep segment after last cut
+        if current_time < duration:
+            keep_segments.append({
+                'start': current_time,
+                'end': duration
+            })
+
+        if not keep_segments:
+            raise ValueError("No segments left after cuts")
+
+        logger.info(f"Keeping {len(keep_segments)} segments after removing {len(cuts)} cuts")
+
+        # Extract each segment to temp file
+        temp_dir = Path(tempfile.mkdtemp())
+        segment_paths = []
+
+        try:
+            for i, seg in enumerate(keep_segments):
+                seg_path = temp_dir / f"segment_{i:04d}.mp4"
+                FFmpegProcessor.extract_segment(
+                    video_path,
+                    seg['start'],
+                    seg['end'],
+                    seg_path,
+                    reencode=True  # Re-encode for clean cuts
+                )
+                segment_paths.append(seg_path)
+
+            # Concatenate all segments
+            FFmpegProcessor.concatenate_segments(
+                segment_paths,
+                output_path,
+                reencode=True
+            )
+
+            logger.info(f"Removed {len(cuts)} segments, output: {output_path}")
+            return output_path
+
+        finally:
+            # Cleanup temp files
+            shutil.rmtree(temp_dir, ignore_errors=True)

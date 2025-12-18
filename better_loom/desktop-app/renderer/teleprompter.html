@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Teleprompter</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      background: transparent !important;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -webkit-user-select: none;
+      padding: 8px;
+    }
+
+    .panel {
+      background: rgba(0, 0, 0, 0.85);
+      backdrop-filter: blur(30px) saturate(150%);
+      -webkit-backdrop-filter: blur(30px) saturate(150%);
+      border-radius: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+    }
+
+    .header {
+      padding: 10px 14px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      -webkit-app-region: drag;
+      flex-shrink: 0;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .header h2 {
+      font-size: 12px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.7);
+      letter-spacing: -0.01em;
+    }
+
+    .header-controls {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      -webkit-app-region: no-drag;
+    }
+
+    .speed-control {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 6px;
+      padding: 4px 8px;
+    }
+
+    .speed-btn {
+      width: 22px;
+      height: 22px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: rgba(255, 255, 255, 0.6);
+      cursor: pointer;
+      transition: all 0.12s;
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .speed-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: rgba(255, 255, 255, 0.9);
+    }
+
+    .speed-value {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.5);
+      min-width: 32px;
+      text-align: center;
+    }
+
+    .control-btn {
+      width: 28px;
+      height: 28px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255, 255, 255, 0.08);
+      border: none;
+      border-radius: 6px;
+      color: rgba(255, 255, 255, 0.7);
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+
+    .control-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      color: rgba(255, 255, 255, 0.95);
+    }
+
+    .control-btn.active {
+      background: rgba(52, 199, 89, 0.3);
+      color: rgba(52, 199, 89, 1);
+    }
+
+    .close-btn {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      color: rgba(255, 255, 255, 0.4);
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+
+    .close-btn:hover {
+      background: rgba(255, 59, 48, 0.2);
+      color: rgba(255, 59, 48, 0.9);
+    }
+
+    .script-container {
+      flex: 1;
+      overflow: hidden;
+      position: relative;
+    }
+
+    .script-wrapper {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      padding: 20px 24px;
+      transition: transform 0.1s linear;
+    }
+
+    .script-text {
+      font-size: 28px;
+      line-height: 1.5;
+      color: rgba(255, 255, 255, 0.95);
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    .script-text.paused {
+      opacity: 0.6;
+    }
+
+    /* Gradient overlays for readability */
+    .gradient-top {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 40px;
+      background: linear-gradient(to bottom, rgba(0,0,0,0.85), transparent);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    .gradient-bottom {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 40px;
+      background: linear-gradient(to top, rgba(0,0,0,0.85), transparent);
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    /* Empty state */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: rgba(255, 255, 255, 0.4);
+      text-align: center;
+      padding: 20px;
+    }
+
+    .empty-state svg {
+      margin-bottom: 12px;
+      opacity: 0.5;
+    }
+
+    .empty-state p {
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .edit-btn {
+      margin-top: 16px;
+      padding: 8px 16px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      color: rgba(255, 255, 255, 0.8);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+
+    .edit-btn:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.25);
+    }
+
+    /* Edit mode */
+    .edit-overlay {
+      display: none;
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: rgba(0, 0, 0, 0.95);
+      z-index: 10;
+      padding: 16px;
+      flex-direction: column;
+    }
+
+    .edit-overlay.visible {
+      display: flex;
+    }
+
+    .edit-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+
+    .edit-header h3 {
+      font-size: 13px;
+      font-weight: 600;
+      color: rgba(255, 255, 255, 0.8);
+    }
+
+    .edit-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .edit-textarea {
+      flex: 1;
+      width: 100%;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      color: rgba(255, 255, 255, 0.95);
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.6;
+      resize: none;
+      outline: none;
+    }
+
+    .edit-textarea:focus {
+      border-color: rgba(107, 138, 253, 0.5);
+    }
+
+    .edit-textarea::placeholder {
+      color: rgba(255, 255, 255, 0.3);
+    }
+
+    .save-btn {
+      padding: 8px 16px;
+      background: rgba(52, 199, 89, 0.2);
+      border: 1px solid rgba(52, 199, 89, 0.4);
+      border-radius: 8px;
+      color: rgba(52, 199, 89, 1);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+
+    .save-btn:hover {
+      background: rgba(52, 199, 89, 0.3);
+    }
+
+    .cancel-btn {
+      padding: 8px 16px;
+      background: transparent;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 8px;
+      color: rgba(255, 255, 255, 0.6);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+
+    .cancel-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="header">
+      <div class="header-left">
+        <h2>TELEPROMPTER</h2>
+      </div>
+      <div class="header-controls">
+        <div class="speed-control">
+          <button class="speed-btn" id="speed-down">−</button>
+          <span class="speed-value" id="speed-value">1.0x</span>
+          <button class="speed-btn" id="speed-up">+</button>
+        </div>
+        <button class="control-btn" id="play-pause" title="Play/Pause (Space)">
+          <svg id="play-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          <svg id="pause-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+            <rect x="6" y="4" width="4" height="16"/>
+            <rect x="14" y="4" width="4" height="16"/>
+          </svg>
+        </button>
+        <button class="control-btn" id="edit-btn" title="Edit Script">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+            <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+          </svg>
+        </button>
+        <button class="close-btn" id="close-btn" title="Close">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="script-container">
+      <div class="gradient-top"></div>
+      <div class="gradient-bottom"></div>
+
+      <div class="script-wrapper" id="script-wrapper">
+        <div class="script-text" id="script-text"></div>
+      </div>
+
+      <div class="empty-state" id="empty-state">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="16" y1="13" x2="8" y2="13"/>
+          <line x1="16" y1="17" x2="8" y2="17"/>
+          <polyline points="10 9 9 9 8 9"/>
+        </svg>
+        <p>No script loaded.<br>Click Edit to add your script.</p>
+        <button class="edit-btn" id="empty-edit-btn">Edit Script</button>
+      </div>
+
+      <div class="edit-overlay" id="edit-overlay">
+        <div class="edit-header">
+          <h3>Edit Script</h3>
+          <div class="edit-actions">
+            <button class="cancel-btn" id="cancel-edit">Cancel</button>
+            <button class="save-btn" id="save-edit">Save</button>
+          </div>
+        </div>
+        <textarea class="edit-textarea" id="edit-textarea" placeholder="Paste or type your script here..."></textarea>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // State
+    let script = '';
+    let isPlaying = false;
+    let scrollSpeed = 1.0; // pixels per frame at 60fps
+    let scrollPosition = 0;
+    let animationId = null;
+
+    // Elements
+    const scriptWrapper = document.getElementById('script-wrapper');
+    const scriptText = document.getElementById('script-text');
+    const emptyState = document.getElementById('empty-state');
+    const editOverlay = document.getElementById('edit-overlay');
+    const editTextarea = document.getElementById('edit-textarea');
+    const playIcon = document.getElementById('play-icon');
+    const pauseIcon = document.getElementById('pause-icon');
+    const speedValue = document.getElementById('speed-value');
+
+    // Update UI based on script
+    function updateUI() {
+      if (script.trim()) {
+        scriptText.textContent = script;
+        emptyState.style.display = 'none';
+        scriptWrapper.style.display = 'block';
+      } else {
+        emptyState.style.display = 'flex';
+        scriptWrapper.style.display = 'none';
+      }
+    }
+
+    // Animation loop
+    function animate() {
+      if (!isPlaying) return;
+
+      scrollPosition += scrollSpeed;
+      scriptWrapper.style.transform = `translateY(-${scrollPosition}px)`;
+
+      // Check if we've scrolled past the content
+      const maxScroll = scriptWrapper.scrollHeight - scriptWrapper.parentElement.clientHeight + 100;
+      if (scrollPosition >= maxScroll) {
+        // Loop back to start
+        scrollPosition = 0;
+      }
+
+      animationId = requestAnimationFrame(animate);
+    }
+
+    // Play/pause toggle
+    function togglePlay() {
+      if (!script.trim()) return;
+
+      isPlaying = !isPlaying;
+
+      if (isPlaying) {
+        playIcon.style.display = 'none';
+        pauseIcon.style.display = 'block';
+        scriptText.classList.remove('paused');
+        animate();
+      } else {
+        playIcon.style.display = 'block';
+        pauseIcon.style.display = 'none';
+        scriptText.classList.add('paused');
+        if (animationId) {
+          cancelAnimationFrame(animationId);
+          animationId = null;
+        }
+      }
+    }
+
+    // Speed controls
+    function adjustSpeed(delta) {
+      scrollSpeed = Math.max(0.2, Math.min(3.0, scrollSpeed + delta));
+      speedValue.textContent = scrollSpeed.toFixed(1) + 'x';
+    }
+
+    // Reset scroll
+    function resetScroll() {
+      scrollPosition = 0;
+      scriptWrapper.style.transform = 'translateY(0)';
+    }
+
+    // Show edit mode
+    function showEdit() {
+      editTextarea.value = script;
+      editOverlay.classList.add('visible');
+      editTextarea.focus();
+    }
+
+    // Hide edit mode
+    function hideEdit() {
+      editOverlay.classList.remove('visible');
+    }
+
+    // Save script
+    function saveScript() {
+      script = editTextarea.value;
+      resetScroll();
+      updateUI();
+      hideEdit();
+
+      // Save to store for persistence
+      window.soron.setStore('teleprompterScript', script);
+    }
+
+    // Event listeners
+    document.getElementById('play-pause').addEventListener('click', togglePlay);
+    document.getElementById('speed-down').addEventListener('click', () => adjustSpeed(-0.2));
+    document.getElementById('speed-up').addEventListener('click', () => adjustSpeed(0.2));
+    document.getElementById('edit-btn').addEventListener('click', showEdit);
+    document.getElementById('empty-edit-btn').addEventListener('click', showEdit);
+    document.getElementById('cancel-edit').addEventListener('click', hideEdit);
+    document.getElementById('save-edit').addEventListener('click', saveScript);
+    document.getElementById('close-btn').addEventListener('click', () => {
+      window.soron.closeTeleprompter();
+    });
+
+    // Keyboard shortcuts
+    document.addEventListener('keydown', (e) => {
+      if (editOverlay.classList.contains('visible')) {
+        if (e.key === 'Escape') hideEdit();
+        return;
+      }
+
+      if (e.code === 'Space') {
+        e.preventDefault();
+        togglePlay();
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        adjustSpeed(0.2);
+      } else if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        adjustSpeed(-0.2);
+      } else if (e.key === 'r' || e.key === 'R') {
+        e.preventDefault();
+        resetScroll();
+      } else if (e.key === 'Escape') {
+        window.soron.closeTeleprompter();
+      }
+    });
+
+    // Load saved script on init
+    async function init() {
+      try {
+        const savedScript = await window.soron.getStore('teleprompterScript');
+        if (savedScript) {
+          script = savedScript;
+        }
+      } catch (e) {
+        console.log('No saved script');
+      }
+      updateUI();
+    }
+
+    init();
+  </script>
+</body>
+</html>
