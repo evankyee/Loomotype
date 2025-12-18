@@ -1,0 +1,902 @@
+"""
+FFmpeg utilities for video processing.
+
+All video manipulation goes through here. No frame-by-frame processing.
+Uses FFmpeg's native filters for speed and quality.
+"""
+
+import subprocess
+import tempfile
+import shutil
+from pathlib import Path
+from dataclasses import dataclass
+from typing import Optional
+from loguru import logger
+
+from .video_info import get_video_info, get_audio_duration
+
+
+class FFmpegError(Exception):
+    """FFmpeg operation failed."""
+    pass
+
+
+def run_ffmpeg(args: list[str], description: str = "FFmpeg operation") -> str:
+    """
+    Run an FFmpeg command with proper error handling.
+
+    Returns stdout on success, raises FFmpegError on failure.
+    """
+    cmd = ["ffmpeg", "-y", "-hide_banner"] + args
+
+    logger.debug(f"Running: {' '.join(cmd)}")
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        logger.error(f"FFmpeg failed: {result.stderr}")
+        raise FFmpegError(f"{description} failed: {result.stderr}")
+
+    return result.stdout
+
+
+class FFmpegProcessor:
+    """
+    High-level FFmpeg operations for video personalization.
+
+    All methods are stateless - input files in, output files out.
+    """
+
+    @staticmethod
+    def extract_segment(
+        video_path: Path,
+        start_time: float,
+        end_time: float,
+        output_path: Path,
+        reencode: bool = False,
+    ) -> Path:
+        """
+        Extract a video segment.
+
+        Args:
+            video_path: Source video
+            start_time: Start time in seconds
+            end_time: End time in seconds
+            output_path: Where to save the segment
+            reencode: If True, re-encode for frame-accurate cuts
+
+        Returns:
+            Path to extracted segment
+        """
+        duration = end_time - start_time
+
+        if duration <= 0:
+            raise ValueError(f"Invalid segment: {start_time} to {end_time}")
+
+        if reencode:
+            # Frame-accurate but slower
+            # Normalize audio to 48000 Hz for consistency with original video
+            # Force keyframes every 1 second for browser compatibility
+            # Force 30fps output to fix WebM's incorrect fps metadata
+            args = [
+                "-ss", str(start_time),
+                "-i", str(video_path),
+                "-t", str(duration),
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "18",
+                "-r", "30",  # Force 30fps output (fixes WebM 1000fps metadata bug)
+                "-g", "30",  # Keyframe every 30 frames (~1 sec at 30fps)
+                "-keyint_min", "30",  # Minimum keyframe interval
+                "-c:a", "aac",
+                "-ar", "48000",  # Normalize audio sample rate
+                "-b:a", "192k",
+                str(output_path),
+            ]
+        else:
+            # Fast copy (may not be frame-accurate)
+            args = [
+                "-ss", str(start_time),
+                "-i", str(video_path),
+                "-t", str(duration),
+                "-c", "copy",
+                "-avoid_negative_ts", "make_zero",
+                str(output_path),
+            ]
+
+        run_ffmpeg(args, f"Extract segment {start_time}-{end_time}")
+
+        logger.info(f"Extracted segment: {start_time:.2f}s - {end_time:.2f}s")
+        return output_path
+
+    @staticmethod
+    def extract_audio(
+        video_path: Path,
+        output_path: Path,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> Path:
+        """
+        Extract audio from video.
+
+        Optionally extract only a segment.
+        """
+        args = ["-i", str(video_path)]
+
+        if start_time is not None:
+            args = ["-ss", str(start_time)] + args
+
+        if end_time is not None and start_time is not None:
+            args += ["-t", str(end_time - start_time)]
+
+        args += [
+            "-vn",  # No video
+            "-acodec", "pcm_s16le",  # WAV format for processing
+            "-ar", "44100",  # Standard sample rate
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, "Extract audio")
+        return output_path
+
+    @staticmethod
+    def time_stretch_audio(
+        audio_path: Path,
+        target_duration: float,
+        output_path: Path,
+    ) -> Path:
+        """
+        Time-stretch audio to exactly match target duration.
+
+        Uses rubberband for high-quality pitch-preserving stretch.
+        Falls back to atempo if rubberband unavailable.
+
+        This is CRITICAL for keeping video in sync.
+        """
+        current_duration = get_audio_duration(audio_path)
+
+        if abs(current_duration - target_duration) < 0.05:
+            # Close enough, just copy
+            shutil.copy(audio_path, output_path)
+            return output_path
+
+        # Calculate stretch ratio
+        # rubberband tempo: < 1 = slower, > 1 = faster
+        tempo_ratio = current_duration / target_duration
+
+        logger.info(
+            f"Time-stretching audio: {current_duration:.2f}s → {target_duration:.2f}s "
+            f"(ratio: {tempo_ratio:.3f})"
+        )
+
+        # Try rubberband first (better quality)
+        try:
+            args = [
+                "-i", str(audio_path),
+                "-filter:a", f"rubberband=tempo={tempo_ratio}",
+                "-t", str(target_duration),  # Ensure exact duration
+                "-acodec", "pcm_s16le",
+                "-ar", "44100",
+                str(output_path),
+            ]
+            run_ffmpeg(args, "Time-stretch audio (rubberband)")
+
+        except FFmpegError:
+            # Fall back to atempo (lower quality but always available)
+            logger.warning("rubberband unavailable, falling back to atempo")
+
+            # atempo only supports 0.5-2.0 range, chain if needed
+            filters = []
+            remaining_ratio = tempo_ratio
+
+            while remaining_ratio > 2.0:
+                filters.append("atempo=2.0")
+                remaining_ratio /= 2.0
+            while remaining_ratio < 0.5:
+                filters.append("atempo=0.5")
+                remaining_ratio /= 0.5
+
+            filters.append(f"atempo={remaining_ratio}")
+            filter_str = ",".join(filters)
+
+            args = [
+                "-i", str(audio_path),
+                "-filter:a", filter_str,
+                "-t", str(target_duration),
+                "-acodec", "pcm_s16le",
+                "-ar", "44100",
+                str(output_path),
+            ]
+            run_ffmpeg(args, "Time-stretch audio (atempo)")
+
+        return output_path
+
+    @staticmethod
+    def replace_audio(
+        video_path: Path,
+        audio_path: Path,
+        output_path: Path,
+    ) -> Path:
+        """
+        Replace video's audio track with new audio.
+
+        The audio should already be time-matched to the video.
+        """
+        args = [
+            "-i", str(video_path),
+            "-i", str(audio_path),
+            "-c:v", "copy",  # Don't re-encode video
+            "-map", "0:v:0",  # Video from first input
+            "-map", "1:a:0",  # Audio from second input
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",  # End when shortest stream ends
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, "Replace audio")
+        return output_path
+
+    @staticmethod
+    def normalize_audio_loudness(
+        audio_path: Path,
+        output_path: Path,
+        target_lufs: float = -16.0,  # Standard for video content
+    ) -> Path:
+        """
+        Normalize audio to a target loudness level (LUFS).
+
+        This ensures the generated voice matches the original video's volume.
+        -16 LUFS is standard for online video content.
+        """
+        args = [
+            "-i", str(audio_path),
+            "-filter:a", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
+            "-acodec", "pcm_s16le",
+            "-ar", "24000",  # Keep at source rate
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, f"Normalize audio to {target_lufs} LUFS")
+        logger.info(f"Audio normalized to {target_lufs} LUFS")
+        return output_path
+
+    @staticmethod
+    def get_audio_loudness(audio_path: Path) -> float:
+        """Get the integrated loudness of an audio file in LUFS."""
+        import subprocess
+        import json
+
+        cmd = [
+            "ffmpeg", "-i", str(audio_path),
+            "-af", "loudnorm=print_format=json",
+            "-f", "null", "-"
+        ]
+
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        # Parse the loudnorm stats from stderr
+        try:
+            # Find the JSON output in stderr
+            lines = result.stderr.split('\n')
+            json_start = None
+            for i, line in enumerate(lines):
+                if '"input_i"' in line:
+                    json_start = i - 1
+                    break
+
+            if json_start is not None:
+                json_str = '\n'.join(lines[json_start:json_start+12])
+                # Clean up to valid JSON
+                json_str = json_str[json_str.find('{'):json_str.rfind('}')+1]
+                data = json.loads(json_str)
+                return float(data.get("input_i", -23))
+        except Exception as e:
+            logger.warning(f"Could not parse loudness: {e}")
+
+        return -23.0  # Default fallback
+
+    @staticmethod
+    def concatenate_segments(
+        segment_paths: list[Path],
+        output_path: Path,
+        reencode: bool = True,
+    ) -> Path:
+        """
+        Concatenate video segments in order.
+
+        If segments have different codecs/parameters, set reencode=True.
+        """
+        if not segment_paths:
+            raise ValueError("No segments to concatenate")
+
+        if len(segment_paths) == 1:
+            shutil.copy(segment_paths[0], output_path)
+            return output_path
+
+        # Create concat file
+        concat_file = output_path.parent / "concat_list.txt"
+        with open(concat_file, "w") as f:
+            for path in segment_paths:
+                # Escape single quotes in path
+                escaped = str(path).replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+
+        try:
+            if reencode:
+                # Re-encode for compatibility (slower but safer)
+                # Normalize audio sample rate to 48000 Hz to handle Sync Labs output (44100 Hz)
+                # Force keyframes every 1 second for smooth browser playback
+                # Force 30fps output to prevent fps metadata corruption
+                args = [
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", str(concat_file),
+                    "-c:v", "libx264",
+                    "-preset", "fast",
+                    "-crf", "18",
+                    "-r", "30",  # Force 30fps output (fixes fps metadata issues)
+                    "-g", "30",  # Keyframe every 30 frames (~1 sec at 30fps)
+                    "-keyint_min", "30",  # Minimum keyframe interval
+                    "-c:a", "aac",
+                    "-ar", "48000",  # Normalize audio sample rate
+                    "-b:a", "192k",
+                    str(output_path),
+                ]
+            else:
+                # Stream copy (fast but requires compatible segments)
+                args = [
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", str(concat_file),
+                    "-c", "copy",
+                    str(output_path),
+                ]
+
+            run_ffmpeg(args, "Concatenate segments")
+
+        finally:
+            concat_file.unlink(missing_ok=True)
+
+        logger.info(f"Concatenated {len(segment_paths)} segments")
+        return output_path
+
+    @staticmethod
+    def apply_overlay(
+        video_path: Path,
+        overlay_path: Path,
+        output_path: Path,
+        x: int,
+        y: int,
+        start_time: Optional[float] = None,
+        end_time: Optional[float] = None,
+    ) -> Path:
+        """
+        Apply a single image overlay to video.
+
+        Args:
+            video_path: Source video
+            overlay_path: PNG image to overlay (should have transparency)
+            output_path: Where to save result
+            x, y: Position (top-left corner of overlay)
+            start_time, end_time: When overlay is visible (None = entire video)
+        """
+        # Build enable expression
+        if start_time is not None and end_time is not None:
+            enable = f"enable='between(t,{start_time},{end_time})'"
+        elif start_time is not None:
+            enable = f"enable='gte(t,{start_time})'"
+        elif end_time is not None:
+            enable = f"enable='lte(t,{end_time})'"
+        else:
+            enable = ""
+
+        overlay_filter = f"overlay={x}:{y}"
+        if enable:
+            overlay_filter += f":{enable}"
+
+        args = [
+            "-i", str(video_path),
+            "-i", str(overlay_path),
+            "-filter_complex", f"[0][1]{overlay_filter}",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-c:a", "copy",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, "Apply overlay")
+        return output_path
+
+    @staticmethod
+    def apply_multiple_overlays(
+        video_path: Path,
+        overlays: list[dict],
+        output_path: Path,
+    ) -> Path:
+        """
+        Apply multiple overlays in a single pass.
+
+        Each overlay dict should have:
+        - path: Path to PNG image
+        - x, y: Position
+        - start_time, end_time: Optional timing
+
+        This is more efficient than applying overlays one at a time.
+        """
+        if not overlays:
+            shutil.copy(video_path, output_path)
+            return output_path
+
+        # Build input list
+        inputs = ["-i", str(video_path)]
+        for overlay in overlays:
+            inputs += ["-i", str(overlay["path"])]
+
+        # Build filter complex
+        filter_parts = []
+        current_output = "0"
+
+        for i, overlay in enumerate(overlays):
+            input_idx = i + 1
+            output_label = f"v{i}" if i < len(overlays) - 1 else ""
+
+            # Build overlay filter
+            x = overlay["x"]
+            y = overlay["y"]
+            overlay_filter = f"overlay={x}:{y}"
+
+            # Add timing if specified
+            start = overlay.get("start_time")
+            end = overlay.get("end_time")
+            if start is not None and end is not None:
+                overlay_filter += f":enable='between(t,{start},{end})'"
+            elif start is not None:
+                overlay_filter += f":enable='gte(t,{start})'"
+            elif end is not None:
+                overlay_filter += f":enable='lte(t,{end})'"
+
+            if output_label:
+                filter_parts.append(f"[{current_output}][{input_idx}]{overlay_filter}[{output_label}]")
+                current_output = output_label
+            else:
+                filter_parts.append(f"[{current_output}][{input_idx}]{overlay_filter}")
+
+        filter_complex = ";".join(filter_parts)
+
+        args = inputs + [
+            "-filter_complex", filter_complex,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-c:a", "copy",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, "Apply multiple overlays")
+        logger.info(f"Applied {len(overlays)} overlays")
+        return output_path
+
+    @staticmethod
+    def scale_video(
+        video_path: Path,
+        output_path: Path,
+        target_width: int,
+        target_height: int,
+        maintain_aspect: bool = True,
+    ) -> Path:
+        """
+        Scale video to target dimensions.
+
+        Args:
+            video_path: Source video
+            output_path: Where to save scaled video
+            target_width: Target width in pixels
+            target_height: Target height in pixels
+            maintain_aspect: If True, scale to fit within target while maintaining aspect ratio
+
+        Returns:
+            Path to scaled video
+        """
+        if maintain_aspect:
+            # Scale to fit within target dimensions while maintaining aspect ratio
+            # Use -1 to auto-calculate one dimension
+            scale_filter = f"scale='min({target_width},iw)':min'({target_height},ih)':force_original_aspect_ratio=decrease"
+            # Pad to exact dimensions if needed
+            pad_filter = f"pad={target_width}:{target_height}:(ow-iw)/2:(oh-ih)/2:black"
+            vf = f"{scale_filter},{pad_filter}"
+        else:
+            # Force exact dimensions (may distort)
+            vf = f"scale={target_width}:{target_height}"
+
+        args = [
+            "-i", str(video_path),
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-c:a", "copy",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, f"Scale video to {target_width}x{target_height}")
+        logger.info(f"Scaled video to {target_width}x{target_height}")
+        return output_path
+
+    @staticmethod
+    def upscale_for_lipsync(
+        video_path: Path,
+        output_path: Path,
+        min_dimension: int = 512,
+    ) -> tuple[Path, tuple[int, int]]:
+        """
+        Upscale video if needed for lip-sync processing.
+
+        Sync Labs requires faces to be clearly visible. This function upscales
+        small videos (like camera bubbles) to ensure face detection works.
+
+        Args:
+            video_path: Source video
+            output_path: Where to save upscaled video
+            min_dimension: Minimum dimension required (default 512px)
+
+        Returns:
+            Tuple of (output_path, original_dimensions)
+        """
+        info = get_video_info(video_path)
+        original_dims = (info.width, info.height)
+
+        current_min = min(info.width, info.height)
+
+        if current_min >= min_dimension:
+            # Already large enough, just copy
+            shutil.copy(video_path, output_path)
+            logger.info(f"Video already large enough ({info.width}x{info.height}), no upscaling needed")
+            return output_path, original_dims
+
+        # Calculate scale factor to reach minimum dimension
+        scale_factor = min_dimension / current_min
+        new_width = int(info.width * scale_factor)
+        new_height = int(info.height * scale_factor)
+
+        # Ensure even dimensions (required by many codecs)
+        new_width = new_width + (new_width % 2)
+        new_height = new_height + (new_height % 2)
+
+        logger.info(f"Upscaling video from {info.width}x{info.height} to {new_width}x{new_height} for lip-sync")
+
+        # Use high-quality lanczos scaling
+        args = [
+            "-i", str(video_path),
+            "-vf", f"scale={new_width}:{new_height}:flags=lanczos",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-c:a", "aac",
+            "-ar", "48000",
+            "-b:a", "192k",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, f"Upscale video for lip-sync")
+        return output_path, original_dims
+
+    @staticmethod
+    def downscale_to_original(
+        video_path: Path,
+        output_path: Path,
+        original_dims: tuple[int, int],
+    ) -> Path:
+        """
+        Downscale video back to original dimensions.
+
+        Args:
+            video_path: Upscaled video
+            output_path: Where to save downscaled video
+            original_dims: Original (width, height)
+
+        Returns:
+            Path to downscaled video
+        """
+        info = get_video_info(video_path)
+
+        if info.width == original_dims[0] and info.height == original_dims[1]:
+            # Already correct size, just copy
+            shutil.copy(video_path, output_path)
+            return output_path
+
+        width, height = original_dims
+        logger.info(f"Downscaling video from {info.width}x{info.height} back to {width}x{height}")
+
+        # Use high-quality lanczos scaling
+        args = [
+            "-i", str(video_path),
+            "-vf", f"scale={width}:{height}:flags=lanczos",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-g", "30",  # Keyframe every 30 frames
+            "-keyint_min", "30",
+            "-c:a", "aac",
+            "-ar", "48000",
+            "-b:a", "192k",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, f"Downscale video to {width}x{height}")
+        return output_path
+
+    @staticmethod
+    def crop_bubble_region(
+        video_path: Path,
+        output_path: Path,
+        bubble_size: int = 400,
+        padding: int = 30,
+        position: str = "bottom-left",
+    ) -> Path:
+        """
+        Crop the camera bubble region from a screen recording.
+
+        This extracts just the bubble area for lip-sync processing.
+        The bubble should be circular, positioned at the specified location.
+
+        Args:
+            video_path: Screen recording with embedded bubble
+            output_path: Where to save cropped bubble video
+            bubble_size: Size of bubble in pixels
+            padding: Padding from screen edge
+            position: Bubble position ("bottom-left", "bottom-right", etc.)
+
+        Returns:
+            Path to cropped bubble video
+        """
+        info = get_video_info(video_path)
+        screen_w = info.width
+        screen_h = info.height
+
+        # Calculate crop position based on bubble position
+        if position == "bottom-left":
+            x = padding
+            y = screen_h - bubble_size - padding
+        elif position == "bottom-right":
+            x = screen_w - bubble_size - padding
+            y = screen_h - bubble_size - padding
+        elif position == "top-left":
+            x = padding
+            y = padding
+        elif position == "top-right":
+            x = screen_w - bubble_size - padding
+            y = padding
+        else:
+            x = padding
+            y = screen_h - bubble_size - padding
+
+        logger.info(f"Cropping bubble region: {bubble_size}x{bubble_size} at ({x}, {y})")
+
+        # Crop the bubble region and force 30fps
+        args = [
+            "-i", str(video_path),
+            "-vf", f"crop={bubble_size}:{bubble_size}:{x}:{y}",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-r", "30",
+            "-c:a", "aac",
+            "-ar", "48000",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, f"Crop bubble region at {position}")
+        logger.info(f"Bubble region cropped: {output_path}")
+        return output_path
+
+    @staticmethod
+    def overlay_lipsync_bubble(
+        original_video: Path,
+        lipsync_bubble: Path,
+        output_path: Path,
+        bubble_size: int = 400,
+        padding: int = 30,
+        position: str = "bottom-left",
+        new_audio: Optional[Path] = None,
+    ) -> Path:
+        """
+        Overlay a lip-synced bubble back onto the original screen recording.
+
+        This replaces the bubble region with the lip-synced version.
+
+        Args:
+            original_video: Original screen recording with embedded bubble
+            lipsync_bubble: Lip-synced bubble video (cropped, same size as original bubble)
+            output_path: Where to save result
+            bubble_size: Size of bubble in pixels
+            padding: Padding from screen edge
+            position: Bubble position ("bottom-left", etc.)
+            new_audio: Optional new audio to use (for ElevenLabs TTS)
+
+        Returns:
+            Path to video with lip-synced bubble
+        """
+        info = get_video_info(original_video)
+        screen_w = info.width
+        screen_h = info.height
+
+        # Calculate overlay position
+        if position == "bottom-left":
+            x = padding
+            y = screen_h - bubble_size - padding
+        elif position == "bottom-right":
+            x = screen_w - bubble_size - padding
+            y = screen_h - bubble_size - padding
+        elif position == "top-left":
+            x = padding
+            y = padding
+        elif position == "top-right":
+            x = screen_w - bubble_size - padding
+            y = padding
+        else:
+            x = padding
+            y = screen_h - bubble_size - padding
+
+        logger.info(f"Overlaying lip-synced bubble at ({x}, {y})")
+
+        # Simple rectangular overlay (bubble is already the right shape from crop)
+        # Label the output as [vout] so we can map to it
+        filter_complex = (
+            f"[1:v]fps=30,scale={bubble_size}:{bubble_size}[bubble];"
+            f"[0:v]fps=30[screen];"
+            f"[screen][bubble]overlay={x}:{y}:shortest=1[vout]"
+        )
+
+        # Build FFmpeg args
+        args = [
+            "-i", str(original_video),
+            "-i", str(lipsync_bubble),
+        ]
+
+        # Add audio input if provided (ElevenLabs TTS)
+        if new_audio:
+            args.extend(["-i", str(new_audio)])
+            filter_complex += f";[2:a]aresample=48000[aud]"
+            audio_map = "[aud]"
+        else:
+            audio_map = "1:a?"  # Use lip-synced bubble audio
+
+        args.extend([
+            "-filter_complex", filter_complex,
+            "-map", "[vout]",  # Always use the composited overlay video
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-r", "30",
+            "-c:a", "aac",
+            "-ar", "48000",
+            "-map", audio_map,  # Map the audio (either new TTS or bubble audio)
+        ])
+
+        args.append(str(output_path))
+
+        run_ffmpeg(args, "Overlay lip-synced bubble")
+        logger.info(f"Lip-synced bubble overlaid at position {position}")
+        return output_path
+
+    @staticmethod
+    def overlay_camera_bubble(
+        screen_video: Path,
+        camera_video: Path,
+        output_path: Path,
+        position: str = "bottom-right",
+        bubble_size: int = 180,
+        padding: int = 20,
+        border_radius: int = 90,  # For circular bubble
+        use_camera_audio: bool = False,  # Use camera audio (for lip-synced content)
+    ) -> Path:
+        """
+        Overlay camera video as a bubble onto screen recording.
+
+        This composites the lip-synced camera video back onto the screen
+        recording at the specified position.
+
+        Args:
+            screen_video: Main screen recording
+            camera_video: Camera video (lip-synced) to overlay
+            output_path: Where to save result
+            position: "bottom-right", "bottom-left", "top-right", "top-left"
+            bubble_size: Size of the bubble in pixels
+            padding: Padding from screen edges
+            border_radius: Radius for rounded corners (use bubble_size/2 for circle)
+            use_camera_audio: If True, use audio from camera video (for lip-synced segments
+                             with ElevenLabs audio). If False, use audio from screen.
+
+        Returns:
+            Path to composited video
+        """
+        screen_info = get_video_info(screen_video)
+        screen_w = screen_info.width
+        screen_h = screen_info.height
+
+        # Calculate position based on screen size
+        if position == "bottom-right":
+            x = screen_w - bubble_size - padding
+            y = screen_h - bubble_size - padding
+        elif position == "bottom-left":
+            x = padding
+            y = screen_h - bubble_size - padding
+        elif position == "top-right":
+            x = screen_w - bubble_size - padding
+            y = padding
+        elif position == "top-left":
+            x = padding
+            y = padding
+        else:
+            x = screen_w - bubble_size - padding
+            y = screen_h - bubble_size - padding
+
+        logger.info(f"Overlaying camera bubble at ({x}, {y}), size {bubble_size}x{bubble_size}")
+        logger.info(f"Audio source: {'camera (lip-synced)' if use_camera_audio else 'screen'}")
+        logger.info(f"Screen: {screen_w}x{screen_h} @ {screen_info.fps}fps")
+
+        # Get camera info for logging
+        camera_info = get_video_info(camera_video)
+        logger.info(f"Camera: {camera_info.width}x{camera_info.height} @ {camera_info.fps}fps")
+
+        # Use screen's framerate as the target, but clamp to reasonable range
+        # WebM files from MediaRecorder often report incorrect fps (like 1000fps)
+        # Concatenated/processed files can also have weirdly low fps
+        raw_fps = screen_info.fps or 30
+        if raw_fps > 60:
+            logger.warning(f"Screen fps {raw_fps} too high (WebM metadata issue), using 30fps")
+            target_fps = 30
+        elif raw_fps < 15:
+            logger.warning(f"Screen fps {raw_fps} too low (corrupted metadata), using 30fps")
+            target_fps = 30
+        else:
+            target_fps = raw_fps
+
+        # Calculate radius for circle (half of bubble size)
+        radius = bubble_size // 2
+
+        # Simpler, more reliable filter approach:
+        # 1. Normalize screen fps
+        # 2. Scale and crop camera to square
+        # 3. Apply circular mask directly using geq with alpha channel
+        # 4. Overlay onto screen
+        filter_complex = (
+            # Normalize screen to target fps (WebM files report wrong fps)
+            f"[0:v]fps={target_fps}[screen];"
+            # Normalize camera fps, scale to bubble size, crop to square, apply circular alpha mask
+            f"[1:v]fps={target_fps},scale={bubble_size}:{bubble_size}:force_original_aspect_ratio=increase,"
+            f"crop={bubble_size}:{bubble_size},format=rgba,"
+            f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(X-{radius},2)+pow(Y-{radius},2),pow({radius},2)),255,0)'[cam];"
+            # Overlay camera onto normalized screen
+            f"[screen][cam]overlay={x}:{y}:format=auto:shortest=1"
+        )
+
+        # Choose audio source:
+        # - For lip-synced content: use camera audio (1:a) which has ElevenLabs TTS
+        # - For non-lip-synced: use screen audio (0:a) which has original recording
+        audio_map = "1:a?" if use_camera_audio else "0:a?"
+
+        args = [
+            "-i", str(screen_video),
+            "-i", str(camera_video),
+            "-filter_complex", filter_complex,
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-r", str(target_fps),  # Output framerate matches screen
+            "-c:a", "aac",
+            "-ar", "48000",
+            "-map", audio_map,
+            "-vsync", "cfr",  # Constant framerate
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, "Overlay camera bubble")
+        logger.info(f"Camera bubble overlaid at position {position}")
+        return output_path

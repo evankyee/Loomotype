@@ -1,0 +1,50 @@
+{
+  "id": "demo_v1",
+  "name": "Product Demo Template",
+  "base_video_path": "gs://your-bucket/videos/base_demo.mp4",
+  "voice_id": "your-elevenlabs-voice-id",
+  "voice_segments": [
+    {
+      "id": "greeting",
+      "start_time": 2.0,
+      "end_time": 5.5,
+      "template_text": "Hello {client_name}! Welcome to our product demo."
+    },
+    {
+      "id": "company_mention",
+      "start_time": 15.0,
+      "end_time": 18.5,
+      "template_text": "I prepared this specifically for {company_name}."
+    },
+    {
+      "id": "closing",
+      "start_time": 120.0,
+      "end_time": 125.0,
+      "template_text": "Thanks for watching, {client_name}. Let's schedule a call!"
+    }
+  ],
+  "visual_segments": [
+    {
+      "id": "title_name",
+      "segment_type": "text",
+      "start_time": 0.0,
+      "end_time": 5.0,
+      "x": 0.3,
+      "y": 0.4,
+      "width": 0.4,
+      "height": 0.1,
+      "placeholder_key": "client_name"
+    },
+    {
+      "id": "company_logo",
+      "segment_type": "image",
+      "start_time": 10.0,
+      "end_time": 30.0,
+      "x": 0.85,
+      "y": 0.05,
+      "width": 0.1,
+      "height": 0.08,
+      "placeholder_key": "logo"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+python-multipart>=0.0.6
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+loguru>=0.7.0
+python-dotenv>=1.0.0
+
+# Google Cloud
+google-cloud-speech>=2.21.0
+google-cloud-vision>=3.4.0
+google-cloud-storage>=2.13.0
+
+# ElevenLabs
+elevenlabs>=0.2.0
+
+# Video/Audio processing
+opencv-python>=4.8.0
+numpy>=1.24.0
+Pillow>=10.0.0
+ffmpeg-python>=0.2.0
+
+# HTTP client for external APIs (Sync Labs, etc.)
+httpx>=0.25.0

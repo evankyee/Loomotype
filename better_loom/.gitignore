@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Large model files
+models/wav2lip/checkpoints/
+*.pth
+
+# Build outputs
+desktop-app/build/
+desktop-app/dist/
+web-editor/.next/
+*.app
+
+# Environment and secrets
+.env
+.env.local
+keys/
+*.json.bak
+
+# Output files
+output/
+test_output/
+*.mp4
+*.mp3
+*.wav
+*.aiff
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+

@@ -1,0 +1,9 @@
+{
+  "client_name": "Alice",
+  "company_name": "Acme Corporation",
+  "logo_url": "gs://your-bucket/logos/acme_logo.png",
+  "custom_fields": {
+    "industry": "Technology",
+    "use_case": "Developer Productivity"
+  }
+}

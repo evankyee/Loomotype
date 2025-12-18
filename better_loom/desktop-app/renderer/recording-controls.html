@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Recording Controls</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: transparent;
+      -webkit-app-region: drag;
+    }
+
+    .controls {
+      background: rgba(26, 26, 46, 0.95);
+      backdrop-filter: blur(20px);
+      border-radius: 16px;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    }
+
+    .timer {
+      font-size: 24px;
+      font-weight: 600;
+      color: #fff;
+      font-variant-numeric: tabular-nums;
+      min-width: 80px;
+    }
+
+    .recording-indicator {
+      width: 12px;
+      height: 12px;
+      background: #ef4444;
+      border-radius: 50%;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    .recording-indicator.paused {
+      animation: none;
+      background: #f59e0b;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.9); }
+    }
+
+    .btn {
+      -webkit-app-region: no-drag;
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      border-radius: 10px;
+      width: 44px;
+      height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s ease;
+      color: #fff;
+    }
+
+    .btn:hover {
+      background: rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-stop {
+      background: #ef4444;
+      width: 52px;
+      height: 52px;
+      border-radius: 12px;
+    }
+
+    .btn-stop:hover {
+      background: #dc2626;
+      transform: scale(1.05);
+    }
+
+    .btn-stop svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .btn svg {
+      width: 18px;
+      height: 18px;
+    }
+
+    .divider {
+      width: 1px;
+      height: 32px;
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .camera-preview {
+      width: 64px;
+      height: 48px;
+      border-radius: 8px;
+      overflow: hidden;
+      background: #000;
+    }
+
+    .camera-preview video {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <div class="recording-indicator" id="indicator"></div>
+    <div class="timer" id="timer">00:00</div>
+
+    <div class="divider"></div>
+
+    <button class="btn" id="pause-btn" title="Pause (⌘⇧P)">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <rect x="6" y="4" width="4" height="16"/>
+        <rect x="14" y="4" width="4" height="16"/>
+      </svg>
+    </button>
+
+    <button class="btn btn-stop" id="stop-btn" title="Stop Recording (⌘⇧R)">
+      <svg viewBox="0 0 24 24" fill="currentColor">
+        <rect x="6" y="6" width="12" height="12" rx="2"/>
+      </svg>
+    </button>
+
+    <div class="divider"></div>
+
+    <div class="camera-preview" id="camera-preview">
+      <video id="camera-video" autoplay muted playsinline></video>
+    </div>
+  </div>
+
+  <script>
+    let startTime = Date.now();
+    let isPaused = false;
+    let pausedTime = 0;
+    let pauseStart = null;
+
+    // Update timer
+    function updateTimer() {
+      if (isPaused) return;
+
+      const elapsed = Date.now() - startTime - pausedTime;
+      const seconds = Math.floor(elapsed / 1000) % 60;
+      const minutes = Math.floor(elapsed / 60000);
+
+      document.getElementById('timer').textContent =
+        `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+    }
+
+    setInterval(updateTimer, 100);
+
+    // Pause button
+    document.getElementById('pause-btn').addEventListener('click', () => {
+      isPaused = !isPaused;
+
+      const indicator = document.getElementById('indicator');
+      const pauseBtn = document.getElementById('pause-btn');
+
+      if (isPaused) {
+        indicator.classList.add('paused');
+        pauseStart = Date.now();
+        pauseBtn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+        `;
+      } else {
+        indicator.classList.remove('paused');
+        pausedTime += Date.now() - pauseStart;
+        pauseBtn.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="currentColor">
+            <rect x="6" y="4" width="4" height="16"/>
+            <rect x="14" y="4" width="4" height="16"/>
+          </svg>
+        `;
+      }
+
+      // Notify main app
+      window.soron.onTogglePause && window.soron.onTogglePause();
+    });
+
+    // Stop button
+    document.getElementById('stop-btn').addEventListener('click', () => {
+      window.close();
+    });
+
+    // Start camera preview
+    async function startCameraPreview() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 128, height: 96, facingMode: 'user' },
+          audio: false
+        });
+
+        document.getElementById('camera-video').srcObject = stream;
+      } catch (err) {
+        console.log('Camera not available:', err);
+        document.getElementById('camera-preview').style.display = 'none';
+      }
+    }
+
+    startCameraPreview();
+
+    // Listen for external commands
+    if (window.soron) {
+      window.soron.onStopRecording(() => {
+        window.close();
+      });
+
+      window.soron.onTogglePause(() => {
+        document.getElementById('pause-btn').click();
+      });
+    }
+  </script>
+</body>
+</html>
