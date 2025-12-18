@@ -15,21 +15,33 @@ let isRecording = false;
 const API_URL = store.get('apiUrl', 'http://127.0.0.1:8000');
 
 function createMainWindow() {
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  const { width: screenWidth, height: screenHeight } = display.workAreaSize;
+
+  // Floating bar dimensions (extra height for tooltips)
+  const barWidth = 440;
+  const barHeight = 90; // Extra space above for tooltips
+
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
-    minWidth: 800,
-    minHeight: 600,
-    titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 15, y: 15 },
+    width: barWidth,
+    height: barHeight,
+    x: Math.floor(screenWidth / 2 - barWidth / 2),
+    y: screenHeight - barHeight - 30,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    resizable: false,
+    hasShadow: false,
+    skipTaskbar: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
       preload: path.join(__dirname, 'preload.js'),
-      backgroundThrottling: false, // Keep processing IPC when hidden
+      backgroundThrottling: false,
     },
     show: false,
-    backgroundColor: '#1a1a2e',
   });
 
   mainWindow.loadFile('renderer/index.html');
@@ -41,6 +53,132 @@ function createMainWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+}
+
+// Recents popup window
+let recentsWindow = null;
+
+function createRecentsWindow() {
+  if (recentsWindow) {
+    recentsWindow.focus();
+    return;
+  }
+
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  const { width: screenWidth, height: screenHeight } = display.workAreaSize;
+
+  const recentsWidth = 340;
+  const recentsHeight = 360;
+
+  recentsWindow = new BrowserWindow({
+    width: recentsWidth,
+    height: recentsHeight,
+    x: Math.floor(screenWidth / 2 - recentsWidth / 2),
+    y: screenHeight - recentsHeight - 100,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    resizable: false,
+    hasShadow: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+    show: false,
+  });
+
+  recentsWindow.loadFile('renderer/recents.html');
+
+  recentsWindow.once('ready-to-show', () => {
+    recentsWindow.show();
+  });
+
+  recentsWindow.on('closed', () => {
+    recentsWindow = null;
+    // Tell main window recents is closed
+    if (mainWindow) {
+      mainWindow.webContents.send('recents-closed');
+    }
+  });
+
+  // Close when clicking outside
+  recentsWindow.on('blur', () => {
+    if (recentsWindow && !recentsWindow.isDestroyed()) {
+      recentsWindow.close();
+    }
+  });
+}
+
+function closeRecentsWindow() {
+  if (recentsWindow && !recentsWindow.isDestroyed()) {
+    recentsWindow.close();
+    recentsWindow = null;
+  }
+}
+
+// Settings popup window
+let settingsWindow = null;
+
+function createSettingsWindow() {
+  if (settingsWindow) {
+    settingsWindow.focus();
+    return;
+  }
+
+  const { screen } = require('electron');
+  const display = screen.getPrimaryDisplay();
+  const { width: screenWidth, height: screenHeight } = display.workAreaSize;
+
+  const settingsWidth = 300;
+  const settingsHeight = 320;
+
+  settingsWindow = new BrowserWindow({
+    width: settingsWidth,
+    height: settingsHeight,
+    x: Math.floor(screenWidth / 2 - settingsWidth / 2),
+    y: screenHeight - settingsHeight - 120,
+    frame: false,
+    transparent: true,
+    backgroundColor: '#00000000',
+    alwaysOnTop: true,
+    resizable: false,
+    hasShadow: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'preload.js'),
+    },
+    show: false,
+  });
+
+  settingsWindow.loadFile('renderer/settings.html');
+
+  settingsWindow.once('ready-to-show', () => {
+    settingsWindow.show();
+  });
+
+  settingsWindow.on('closed', () => {
+    settingsWindow = null;
+    if (mainWindow) {
+      mainWindow.webContents.send('settings-closed');
+    }
+  });
+
+  settingsWindow.on('blur', () => {
+    if (settingsWindow && !settingsWindow.isDestroyed()) {
+      settingsWindow.close();
+    }
+  });
+}
+
+function closeSettingsWindow() {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.close();
+    settingsWindow = null;
+  }
 }
 
 function createRecordingWindow(sourceId = null) {
@@ -516,6 +654,30 @@ ipcMain.handle('get-store', (event, key) => {
 
 ipcMain.handle('set-store', (event, key, value) => {
   store.set(key, value);
+});
+
+ipcMain.handle('toggle-recents', () => {
+  if (recentsWindow && !recentsWindow.isDestroyed()) {
+    closeRecentsWindow();
+  } else {
+    createRecentsWindow();
+  }
+});
+
+ipcMain.handle('close-recents', () => {
+  closeRecentsWindow();
+});
+
+ipcMain.handle('toggle-settings', () => {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    closeSettingsWindow();
+  } else {
+    createSettingsWindow();
+  }
+});
+
+ipcMain.handle('close-settings', () => {
+  closeSettingsWindow();
 });
 
 ipcMain.handle('upload-for-personalization', async (event, { filePath, cameraFilePath, hasEmbeddedBubble }) => {

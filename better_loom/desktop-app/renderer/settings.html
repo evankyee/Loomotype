@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Settings</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    html, body {
+      background: transparent !important;
+      height: 100%;
+      overflow: hidden;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      color: rgba(255, 255, 255, 0.92);
+      -webkit-font-smoothing: antialiased;
+      -webkit-user-select: none;
+      padding: 8px;
+    }
+
+    .panel {
+      background: rgba(60, 60, 68, 0.8);
+      backdrop-filter: blur(50px) saturate(180%);
+      -webkit-backdrop-filter: blur(50px) saturate(180%);
+      border-radius: 18px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow:
+        0 12px 40px rgba(0, 0, 0, 0.3),
+        inset 0 1px 0 rgba(255, 255, 255, 0.15);
+    }
+
+    .header {
+      padding: 14px 16px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .header h2 {
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+
+    .close-btn {
+      width: 24px;
+      height: 24px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 6px;
+      color: rgba(255, 255, 255, 0.4);
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+
+    .close-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: rgba(255, 255, 255, 0.7);
+    }
+
+    .content {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+
+    .group {
+      margin-bottom: 18px;
+    }
+
+    .group:last-child {
+      margin-bottom: 0;
+    }
+
+    .group label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      color: rgba(255, 255, 255, 0.4);
+      margin-bottom: 8px;
+    }
+
+    .group select {
+      width: 100%;
+      padding: 10px 12px;
+      background: rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      font-size: 13px;
+      font-family: inherit;
+      color: rgba(255, 255, 255, 0.95);
+      outline: none;
+      cursor: pointer;
+      transition: all 0.12s;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='rgba(255,255,255,0.5)' stroke-width='2'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+    }
+
+    .group select:hover {
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.25);
+    }
+
+    .group select:focus {
+      border-color: rgba(107, 138, 253, 0.6);
+      box-shadow: 0 0 0 2px rgba(107, 138, 253, 0.2);
+    }
+
+    .group select option {
+      background: rgba(40, 40, 45, 0.98);
+      color: rgba(255, 255, 255, 0.95);
+    }
+
+    .divider {
+      height: 1px;
+      background: rgba(255, 255, 255, 0.06);
+      margin: 18px 0;
+    }
+
+    .version {
+      text-align: center;
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.25);
+      padding-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="panel">
+    <div class="header">
+      <h2>Settings</h2>
+      <button class="close-btn" id="close-btn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="content">
+      <div class="group">
+        <label>Video Quality</label>
+        <select id="quality">
+          <option value="1080p">1080p (Recommended)</option>
+          <option value="720p">720p</option>
+          <option value="4k">4K</option>
+        </select>
+      </div>
+
+      <div class="group">
+        <label>Frame Rate</label>
+        <select id="framerate">
+          <option value="30">30 fps (Recommended)</option>
+          <option value="60">60 fps</option>
+        </select>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="group">
+        <label>Microphone</label>
+        <select id="microphone"></select>
+      </div>
+
+      <div class="group">
+        <label>Camera</label>
+        <select id="camera"></select>
+      </div>
+
+      <div class="version">Soron v1.0</div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('close-btn').addEventListener('click', () => {
+      window.soron.closeSettings();
+    });
+
+    async function loadSettings() {
+      const quality = await window.soron.getStore('videoQuality') || '1080p';
+      const framerate = await window.soron.getStore('frameRate') || '30';
+
+      document.getElementById('quality').value = quality;
+      document.getElementById('framerate').value = framerate;
+
+      // Populate devices
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+
+        const micSelect = document.getElementById('microphone');
+        const camSelect = document.getElementById('camera');
+
+        const mics = devices.filter(d => d.kind === 'audioinput');
+        const cams = devices.filter(d => d.kind === 'videoinput');
+
+        micSelect.innerHTML = mics.map(d =>
+          `<option value="${d.deviceId}">${d.label || 'Microphone ' + d.deviceId.slice(0,8)}</option>`
+        ).join('');
+
+        camSelect.innerHTML = cams.map(d =>
+          `<option value="${d.deviceId}">${d.label || 'Camera ' + d.deviceId.slice(0,8)}</option>`
+        ).join('');
+      } catch (err) {
+        console.error('Error loading devices:', err);
+      }
+    }
+
+    // Save settings on change
+    document.getElementById('quality').addEventListener('change', (e) => {
+      window.soron.setStore('videoQuality', e.target.value);
+    });
+
+    document.getElementById('framerate').addEventListener('change', (e) => {
+      window.soron.setStore('frameRate', e.target.value);
+    });
+
+    document.getElementById('microphone').addEventListener('change', (e) => {
+      window.soron.setStore('microphoneId', e.target.value);
+    });
+
+    document.getElementById('camera').addEventListener('change', (e) => {
+      window.soron.setStore('cameraId', e.target.value);
+    });
+
+    loadSettings();
+  </script>
+</body>
+</html>

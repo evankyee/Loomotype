@@ -96,35 +96,35 @@ export function Timeline({
   const hoverPercent = duration > 0 ? (hoverTime / duration) * 100 : 0;
 
   return (
-    <div className="bg-card border-t border-border p-4">
-      {/* Time markers */}
-      <div className="flex justify-between text-xs text-muted mb-2 px-1">
+    <div className="timeline-container p-3">
+      {/* Time markers - monospace, subtle */}
+      <div className="flex justify-between mb-2 px-0.5">
         {generateTimeMarkers(duration).map((time, i) => (
-          <span key={i}>{formatTime(time)}</span>
+          <span key={i} className="time-marker">{formatTime(time)}</span>
         ))}
       </div>
 
       {/* Timeline track */}
       <div
         ref={timelineRef}
-        className="relative h-16 bg-secondary rounded-lg cursor-pointer"
+        className="timeline-track cursor-pointer"
         onClick={handleTrackClick}
         onMouseEnter={() => setIsHovering(true)}
         onMouseLeave={() => setIsHovering(false)}
         onMouseMove={handleTrackMouseMove}
       >
-        {/* Waveform placeholder */}
-        <div className="absolute inset-0 opacity-30">
+        {/* Waveform */}
+        <div className="absolute inset-0">
           <WaveformPlaceholder />
         </div>
 
         {/* Trimmed out areas (darkened) */}
         <div
-          className="absolute top-0 bottom-0 left-0 bg-black/60 rounded-l-lg"
+          className="absolute top-0 bottom-0 left-0 bg-background/70 backdrop-blur-[1px] rounded-l-md"
           style={{ width: `${trimStartPercent}%` }}
         />
         <div
-          className="absolute top-0 bottom-0 right-0 bg-black/60 rounded-r-lg"
+          className="absolute top-0 bottom-0 right-0 bg-background/70 backdrop-blur-[1px] rounded-r-md"
           style={{ width: `${100 - trimEndPercent}%` }}
         />
 
@@ -135,7 +135,7 @@ export function Timeline({
           return (
             <div
               key={selection.id}
-              className="absolute top-1 bottom-1 bg-accent/30 border-l-2 border-r-2 border-accent"
+              className="absolute top-1 bottom-1 bg-accent/20 border-l-2 border-r-2 border-accent/60 rounded-sm"
               style={{
                 left: `${startPercent}%`,
                 width: `${endPercent - startPercent}%`,
@@ -144,29 +144,29 @@ export function Timeline({
           );
         })}
 
-        {/* Trim handles */}
+        {/* Trim handles - refined */}
         <div
-          className="absolute top-0 bottom-0 w-3 bg-primary cursor-ew-resize flex items-center justify-center rounded-l"
+          className="absolute top-0 bottom-0 w-2.5 bg-primary hover:bg-primary-hover cursor-ew-resize flex items-center justify-center rounded-l transition-colors duration-150"
           style={{ left: `${trimStartPercent}%`, transform: 'translateX(-50%)' }}
           onMouseDown={(e) => handleMouseDown(e, 'trimStart')}
         >
-          <div className="w-0.5 h-6 bg-white/50 rounded" />
+          <div className="w-px h-5 bg-white/40 rounded-full" />
         </div>
         <div
-          className="absolute top-0 bottom-0 w-3 bg-primary cursor-ew-resize flex items-center justify-center rounded-r"
+          className="absolute top-0 bottom-0 w-2.5 bg-primary hover:bg-primary-hover cursor-ew-resize flex items-center justify-center rounded-r transition-colors duration-150"
           style={{ left: `${trimEndPercent}%`, transform: 'translateX(-50%)' }}
           onMouseDown={(e) => handleMouseDown(e, 'trimEnd')}
         >
-          <div className="w-0.5 h-6 bg-white/50 rounded" />
+          <div className="w-px h-5 bg-white/40 rounded-full" />
         </div>
 
         {/* Hover indicator */}
         {isHovering && !isDragging && (
           <div
-            className="absolute top-0 bottom-0 w-0.5 bg-white/30 pointer-events-none"
+            className="absolute top-0 bottom-0 w-px bg-foreground/20 pointer-events-none transition-opacity duration-100"
             style={{ left: `${hoverPercent}%` }}
           >
-            <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-card px-2 py-1 rounded text-xs whitespace-nowrap">
+            <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-surface-elevated border border-border-subtle px-2 py-0.5 rounded text-xs font-mono text-foreground-secondary whitespace-nowrap shadow-subtle">
               {formatTime(hoverTime)}
             </div>
           </div>
@@ -180,35 +180,46 @@ export function Timeline({
         />
       </div>
 
-      {/* Trim info */}
-      <div className="flex justify-between items-center mt-2 text-xs">
-        <span className="text-muted">
-          Trim: {formatTime(trimStart)} - {formatTime(trimEnd)}
-        </span>
-        <span className="text-muted">
-          Duration: {formatTime(trimEnd - trimStart)}
-        </span>
-        {visualSelections.length > 0 && (
-          <span className="text-accent">
-            {visualSelections.length} selection{visualSelections.length !== 1 ? 's' : ''}
+      {/* Trim info - cleaner layout */}
+      <div className="flex items-center justify-between mt-2 text-xs font-mono">
+        <div className="flex items-center gap-3">
+          <span className="text-foreground-muted">
+            <span className="text-foreground-secondary">In:</span> {formatTime(trimStart)}
           </span>
-        )}
+          <span className="text-foreground-muted">
+            <span className="text-foreground-secondary">Out:</span> {formatTime(trimEnd)}
+          </span>
+        </div>
+        <div className="flex items-center gap-3">
+          <span className="text-foreground-secondary">
+            {formatTime(trimEnd - trimStart)}
+          </span>
+          {visualSelections.length > 0 && (
+            <span className="text-accent/80 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent/60" />
+              {visualSelections.length} edit{visualSelections.length !== 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );
 }
 
 function WaveformPlaceholder() {
-  // Generate random heights for visual effect
-  const bars = 100;
+  // Generate random heights for visual effect - seeded for consistency
+  const bars = 120;
   return (
-    <div className="h-full flex items-center gap-px px-2">
+    <div className="waveform-container h-full flex items-center gap-px px-1.5">
       {Array.from({ length: bars }).map((_, i) => {
-        const height = 20 + Math.random() * 60;
+        // Use sine wave with noise for more natural waveform look
+        const base = Math.sin(i * 0.15) * 0.3 + 0.5;
+        const noise = Math.sin(i * 0.7) * 0.15 + Math.sin(i * 1.3) * 0.1;
+        const height = Math.max(15, Math.min(85, (base + noise) * 100));
         return (
           <div
             key={i}
-            className="flex-1 bg-primary/40 rounded-sm"
+            className="flex-1 bg-primary/30 rounded-[1px] transition-all duration-75"
             style={{ height: `${height}%` }}
           />
         );

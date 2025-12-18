@@ -41,6 +41,22 @@ contextBridge.exposeInMainWorld('soron', {
   // Open external URL (web editor)
   openExternal: (url) => ipcRenderer.invoke('open-external', url),
 
+  // Window management
+  toggleRecents: () => ipcRenderer.invoke('toggle-recents'),
+  closeRecents: () => ipcRenderer.invoke('close-recents'),
+  toggleSettings: () => ipcRenderer.invoke('toggle-settings'),
+  closeSettings: () => ipcRenderer.invoke('close-settings'),
+
+  // Listen for window closed events
+  onRecentsClosed: (callback) => {
+    ipcRenderer.on('recents-closed', callback);
+    return () => ipcRenderer.removeListener('recents-closed', callback);
+  },
+  onSettingsClosed: (callback) => {
+    ipcRenderer.on('settings-closed', callback);
+    return () => ipcRenderer.removeListener('settings-closed', callback);
+  },
+
   // Event listeners
   onStopRecording: (callback) => {
     ipcRenderer.on('stop-recording', callback);

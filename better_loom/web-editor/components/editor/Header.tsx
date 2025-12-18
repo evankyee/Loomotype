@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { Undo2, Redo2, Download, Users, ChevronRight } from 'lucide-react';
 
 interface HeaderProps {
   projectName: string;
@@ -12,21 +13,22 @@ export function Header({ projectName, onProjectNameChange, onPersonalize }: Head
   const [isEditing, setIsEditing] = useState(false);
 
   return (
-    <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4">
-      <div className="flex items-center gap-4">
-        {/* Logo */}
-        <div className="flex items-center gap-2">
-          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary to-primary-hover flex items-center justify-center">
-            <svg className="w-5 h-5 text-white" fill="currentColor" viewBox="0 0 24 24">
-              <circle cx="12" cy="12" r="10" />
-            </svg>
+    <header className="h-12 border-b border-border-subtle bg-surface flex items-center justify-between px-3">
+      {/* Left section - Logo and project name */}
+      <div className="flex items-center gap-1">
+        {/* Logo - clean, minimal */}
+        <div className="flex items-center gap-2 pr-2">
+          <div className="w-6 h-6 rounded-md bg-primary/10 flex items-center justify-center">
+            <div className="w-3 h-3 rounded-full bg-primary" />
           </div>
-          <span className="font-semibold">Soron</span>
+          <span className="text-sm font-semibold text-foreground">Soron</span>
         </div>
 
-        {/* Project name */}
-        <div className="flex items-center gap-2 text-muted">
-          <span>/</span>
+        {/* Breadcrumb separator */}
+        <ChevronRight className="w-3.5 h-3.5 text-foreground-muted" />
+
+        {/* Project name - editable */}
+        <div className="flex items-center">
           {isEditing ? (
             <input
               type="text"
@@ -34,13 +36,13 @@ export function Header({ projectName, onProjectNameChange, onPersonalize }: Head
               onChange={(e) => onProjectNameChange(e.target.value)}
               onBlur={() => setIsEditing(false)}
               onKeyDown={(e) => e.key === 'Enter' && setIsEditing(false)}
-              className="bg-transparent border-b border-primary outline-none px-1"
+              className="bg-transparent text-sm text-foreground-secondary border-b border-primary outline-none px-1 py-0.5 min-w-[120px]"
               autoFocus
             />
           ) : (
             <button
               onClick={() => setIsEditing(true)}
-              className="hover:text-foreground transition-colors"
+              className="text-sm text-foreground-secondary hover:text-foreground px-1 py-0.5 rounded transition-colors duration-150"
             >
               {projectName}
             </button>
@@ -48,34 +50,36 @@ export function Header({ projectName, onProjectNameChange, onPersonalize }: Head
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        {/* Undo/Redo */}
-        <div className="flex items-center gap-1">
-          <button className="p-2 rounded-lg hover:bg-card-hover text-muted hover:text-foreground transition-colors">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-            </svg>
+      {/* Right section - Actions */}
+      <div className="flex items-center gap-1">
+        {/* Undo/Redo - subtle icon buttons */}
+        <div className="flex items-center border-r border-border-subtle pr-2 mr-1">
+          <button
+            className="p-1.5 rounded text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-all duration-150"
+            title="Undo"
+          >
+            <Undo2 className="w-4 h-4" />
           </button>
-          <button className="p-2 rounded-lg hover:bg-card-hover text-muted hover:text-foreground transition-colors">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 10h-10a8 8 0 00-8 8v2M21 10l-6 6m6-6l-6-6" />
-            </svg>
+          <button
+            className="p-1.5 rounded text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-all duration-150"
+            title="Redo"
+          >
+            <Redo2 className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Export button */}
-        <button className="px-4 py-2 bg-gradient-to-r from-primary to-primary-hover text-white rounded-lg font-medium hover:opacity-90 transition-opacity">
-          Export Video
+        {/* Export button - secondary style */}
+        <button className="h-7 px-3 text-xs font-medium text-foreground bg-surface-elevated border border-border rounded-md hover:bg-surface-hover hover:border-foreground-muted/20 transition-all duration-150 flex items-center gap-1.5">
+          <Download className="w-3.5 h-3.5" />
+          Export
         </button>
 
-        {/* Create personalized versions */}
+        {/* Personalize button - primary action */}
         <button
           onClick={onPersonalize}
-          className="px-4 py-2 bg-accent text-white rounded-lg font-medium hover:opacity-90 transition-opacity flex items-center gap-2"
+          className="h-7 px-3 text-xs font-medium text-white bg-primary rounded-md hover:bg-primary-hover active:bg-primary-muted transition-all duration-150 flex items-center gap-1.5"
         >
-          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-          </svg>
+          <Users className="w-3.5 h-3.5" />
           Personalize
         </button>
       </div>

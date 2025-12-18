@@ -474,22 +474,23 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
 
             {/* Preview mode indicator and controls */}
             {isPreviewMode && (
-              <div className="absolute top-4 left-4 right-4 flex flex-col gap-2">
+              <div className="absolute top-3 left-3 right-3 flex flex-col gap-2 animate-fade-in">
                 <div className="flex items-center justify-between">
-                  <div className="bg-green-600 text-white px-3 py-1 rounded-full text-sm font-medium">
-                    Preview Mode
+                  <div className="glass px-3 py-1.5 rounded-md flex items-center gap-2 border border-success/20">
+                    <span className="w-2 h-2 rounded-full bg-success animate-pulse-subtle" />
+                    <span className="text-xs font-medium text-foreground">Preview</span>
                   </div>
                   <div className="flex gap-2">
                     <button
                       onClick={handleDiscardPreview}
-                      className="px-4 py-2 bg-gray-600 hover:bg-gray-700 text-white rounded-lg text-sm font-medium transition-colors"
+                      className="glass px-3 py-1.5 rounded-md text-xs font-medium text-foreground-secondary hover:text-foreground border border-border-subtle hover:border-border transition-all duration-150"
                     >
                       Discard
                     </button>
                     <button
                       onClick={handleSavePreview}
                       disabled={isSaving || !!previewError}
-                      className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 text-white rounded-lg text-sm font-medium transition-colors"
+                      className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150"
                     >
                       {isSaving ? 'Saving...' : 'Save Video'}
                     </button>
@@ -497,7 +498,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
                 </div>
                 {/* Preview error message */}
                 {previewError && (
-                  <div className="bg-red-600/90 text-white px-3 py-2 rounded-lg text-sm">
+                  <div className="glass bg-danger/10 text-danger px-3 py-2 rounded-md text-xs border border-danger/20">
                     {previewError}
                   </div>
                 )}
@@ -524,10 +525,10 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
           {!isPlaying && selectionMode === 'none' && (
             <button
               onClick={togglePlay}
-              className="absolute inset-0 flex items-center justify-center bg-black/20 opacity-0 hover:opacity-100 transition-opacity"
+              className="absolute inset-0 flex items-center justify-center bg-black/10 opacity-0 hover:opacity-100 transition-opacity duration-200"
             >
-              <div className="w-20 h-20 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
-                <svg className="w-10 h-10 text-white ml-1" fill="currentColor" viewBox="0 0 24 24">
+              <div className="w-16 h-16 rounded-full glass border border-white/10 flex items-center justify-center hover:scale-105 transition-transform duration-150">
+                <svg className="w-7 h-7 text-white ml-0.5" fill="currentColor" viewBox="0 0 24 24">
                   <path d="M8 5v14l11-7z" />
                 </svg>
               </div>
@@ -549,41 +550,49 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
         )}
       </div>
 
-      {/* Controls bar */}
-      <div className="bg-card border-t border-border p-3">
-        <div className="flex items-center gap-4">
-          {/* Play/Pause */}
+      {/* Controls bar - refined, compact */}
+      <div className="bg-surface border-t border-border-subtle px-3 py-2">
+        <div className="flex items-center gap-3">
+          {/* Play/Pause - larger hit area */}
           <button
             onClick={togglePlay}
-            className="p-2 rounded-lg hover:bg-card-hover transition-colors"
+            className="p-1.5 rounded-md text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-all duration-150"
           >
             {isPlaying ? (
-              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
               </svg>
             ) : (
-              <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
                 <path d="M8 5v14l11-7z" />
               </svg>
             )}
           </button>
 
-          {/* Time display */}
-          <div className="text-sm font-mono text-muted">
-            {formatTime(currentTime)} / {formatTime(duration)}
+          {/* Time display - monospace, subtle separator */}
+          <div className="text-xs font-mono text-foreground-muted tabular-nums">
+            <span className="text-foreground-secondary">{formatTime(currentTime)}</span>
+            <span className="mx-1 text-foreground-muted/50">/</span>
+            <span>{formatTime(duration)}</span>
           </div>
 
-          {/* Volume */}
-          <div className="flex items-center gap-2">
-            <button onClick={toggleMute} className="p-1 hover:text-primary transition-colors">
+          {/* Divider */}
+          <div className="w-px h-5 bg-border-subtle" />
+
+          {/* Volume - compact */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={toggleMute}
+              className="p-1 text-foreground-muted hover:text-foreground transition-colors duration-150"
+            >
               {isMuted || volume === 0 ? (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
                 </svg>
               ) : (
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                 </svg>
               )}
             </button>
@@ -594,75 +603,79 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
               step="0.1"
               value={volume}
               onChange={(e) => changeVolume(parseFloat(e.target.value))}
-              className="w-20 accent-primary"
+              className="w-16 h-1 bg-surface-elevated rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground-secondary hover:[&::-webkit-slider-thumb]:bg-foreground [&::-webkit-slider-thumb]:transition-colors"
             />
           </div>
 
           {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Selection mode toggle */}
-          <div className="flex items-center gap-1 bg-secondary rounded-lg p-1">
+          {/* Selection mode toggle - refined pill */}
+          <div className="flex items-center bg-surface-elevated rounded-md p-0.5">
             <button
               onClick={() => setSelectionMode('none')}
-              className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                selectionMode === 'none' ? 'bg-primary text-white' : 'text-muted hover:text-foreground'
+              className={`px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 ${
+                selectionMode === 'none'
+                  ? 'bg-primary text-white shadow-sm'
+                  : 'text-foreground-muted hover:text-foreground-secondary'
               }`}
             >
               View
             </button>
             <button
               onClick={() => setSelectionMode('visual')}
-              className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
-                selectionMode === 'visual' ? 'bg-primary text-white' : 'text-muted hover:text-foreground'
+              className={`px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 ${
+                selectionMode === 'visual'
+                  ? 'bg-primary text-white shadow-sm'
+                  : 'text-foreground-muted hover:text-foreground-secondary'
               }`}
             >
               Select
             </button>
           </div>
 
-          {/* Render button */}
+          {/* Render button - cleaner states */}
           <button
             onClick={handleRenderVideo}
             disabled={isRendering || (visualSelections.filter(s => s.replacementValue || s.replacementType === 'blur' || s.replacementType === 'remove').length === 0 && Object.keys(editedWords).length === 0)}
-            className={`px-4 py-1.5 rounded-lg text-sm font-medium transition-colors flex items-center gap-2 ${
+            className={`h-7 px-3 rounded-md text-xs font-medium transition-all duration-150 flex items-center gap-1.5 ${
               isRendering
-                ? 'bg-yellow-500/20 text-yellow-400 cursor-wait'
+                ? 'bg-warning/15 text-warning border border-warning/20'
                 : (visualSelections.filter(s => s.replacementValue || s.replacementType === 'blur' || s.replacementType === 'remove').length === 0 && Object.keys(editedWords).length === 0)
-                ? 'bg-secondary text-muted cursor-not-allowed'
-                : 'bg-green-600 hover:bg-green-700 text-white'
+                ? 'bg-surface-elevated text-foreground-muted border border-transparent cursor-not-allowed'
+                : 'bg-success/15 text-success border border-success/20 hover:bg-success/25'
             }`}
           >
             {isRendering ? (
               <>
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                   <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
                 </svg>
-                Rendering {renderProgress}%
+                {renderProgress}%
               </>
             ) : (
               <>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
+                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
                 </svg>
-                Render Video
+                Render
               </>
             )}
           </button>
 
-          {/* Render error indicator */}
+          {/* Render error - more subtle */}
           {renderError && (
-            <span className="text-red-400 text-xs max-w-48 truncate" title={renderError}>
+            <span className="text-danger/80 text-xs max-w-40 truncate" title={renderError}>
               {renderError}
             </span>
           )}
 
-          {/* Playback speed */}
+          {/* Playback speed - minimal select */}
           <select
             value={playbackRate}
             onChange={(e) => changePlaybackRate(parseFloat(e.target.value))}
-            className="bg-secondary text-sm rounded-lg px-2 py-1.5 outline-none"
+            className="bg-surface-elevated text-xs text-foreground-secondary rounded-md px-2 py-1 border border-transparent hover:border-border outline-none cursor-pointer transition-colors duration-150"
           >
             <option value="0.5">0.5x</option>
             <option value="0.75">0.75x</option>
@@ -673,9 +686,9 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
           </select>
 
           {/* Fullscreen */}
-          <button className="p-2 rounded-lg hover:bg-card-hover transition-colors">
-            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+          <button className="p-1.5 rounded-md text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-all duration-150">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
             </svg>
           </button>
         </div>
