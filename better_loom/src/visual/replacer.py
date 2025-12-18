@@ -43,32 +43,80 @@ class VisualReplacer:
         # Default font for text rendering
         self.default_font = None  # Will use PIL default
 
+    def _find_system_font(self) -> str | None:
+        """Find a good system font for text rendering."""
+        import platform
+        import os
+
+        system = platform.system()
+
+        # Fonts to try, in order of preference
+        if system == "Darwin":  # macOS
+            font_paths = [
+                "/System/Library/Fonts/SFNSText.ttf",
+                "/System/Library/Fonts/SFNS.ttf",
+                "/Library/Fonts/SF-Pro-Text-Regular.otf",
+                "/System/Library/Fonts/Helvetica.ttc",
+                "/System/Library/Fonts/HelveticaNeue.ttc",
+                "/Library/Fonts/Arial.ttf",
+                "/System/Library/Fonts/Supplemental/Arial.ttf",
+            ]
+        elif system == "Windows":
+            font_paths = [
+                "C:/Windows/Fonts/segoeui.ttf",
+                "C:/Windows/Fonts/arial.ttf",
+                "C:/Windows/Fonts/calibri.ttf",
+            ]
+        else:  # Linux
+            font_paths = [
+                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+                "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+                "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+                "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            ]
+
+        for path in font_paths:
+            if os.path.exists(path):
+                return path
+
+        return None
+
     def create_text_asset(
         self,
         text: str,
         width: int,
         height: int,
         font_path: str = None,
-        font_size: int = 32,
+        font_size: int = None,  # None = auto-scale
         color: tuple = (255, 255, 255),
         bg_color: tuple = None,
+        align: str = "left",  # left, center, right
+        padding: int = 6,  # Padding from edges
+        edge_feather: int = 2,  # Pixels to feather edges for blending
     ) -> ReplacementAsset:
         """
-        Render text to an image asset.
+        Render text to an image asset with auto-scaling and edge blending.
 
         Args:
             text: Text to render
             width: Target width in pixels
             height: Target height in pixels
-            font_path: Path to TTF font (optional)
-            font_size: Font size
+            font_path: Path to TTF font (optional, will find system font)
+            font_size: Font size (None = auto-scale to fit)
             color: Text color (R, G, B)
             bg_color: Background color or None for transparent
+            align: Text alignment (left, center, right)
+            padding: Padding from edges in pixels
+            edge_feather: Pixels to blur edges for smoother blending
 
         Returns:
             ReplacementAsset with rendered text
         """
-        # Create transparent image
+        # Ensure minimum size
+        width = max(width, 20)
+        height = max(height, 12)
+
+        # Create image with background
         if bg_color:
             img = Image.new("RGBA", (width, height), (*bg_color, 255))
         else:
@@ -76,7 +124,51 @@ class VisualReplacer:
 
         draw = ImageDraw.Draw(img)
 
-        # Load font
+        # Find font
+        if font_path is None:
+            font_path = self._find_system_font()
+
+        # Auto-scale font size to fit the box with generous margins
+        # Use 70% of height to leave room for descenders and padding
+        available_width = width - (padding * 2)
+        available_height = int(height * 0.85) - (padding * 2)
+
+        if font_size is None:
+            # Start with height-based estimate
+            font_size = max(8, int(available_height * 0.9))
+
+            # Binary search for best font size
+            min_size, max_size = 8, font_size * 2
+            best_size = 8
+
+            for _ in range(20):  # Max iterations
+                test_size = (min_size + max_size) // 2
+                try:
+                    if font_path:
+                        test_font = ImageFont.truetype(font_path, test_size)
+                    else:
+                        test_font = ImageFont.load_default()
+                        break  # Default font can't be resized
+                except Exception:
+                    test_font = ImageFont.load_default()
+                    break
+
+                bbox = draw.textbbox((0, 0), text, font=test_font)
+                text_w = bbox[2] - bbox[0]
+                text_h = bbox[3] - bbox[1]
+
+                if text_w <= available_width and text_h <= available_height:
+                    best_size = test_size
+                    min_size = test_size + 1
+                else:
+                    max_size = test_size - 1
+
+                if min_size > max_size:
+                    break
+
+            font_size = best_size
+
+        # Load final font
         try:
             if font_path:
                 font = ImageFont.truetype(font_path, font_size)
@@ -85,17 +177,57 @@ class VisualReplacer:
         except Exception:
             font = ImageFont.load_default()
 
-        # Center text
+        # Get text metrics for proper positioning
         bbox = draw.textbbox((0, 0), text, font=font)
         text_width = bbox[2] - bbox[0]
         text_height = bbox[3] - bbox[1]
-        x = (width - text_width) // 2
-        y = (height - text_height) // 2
 
+        # Account for the bbox offset (some fonts have non-zero top offset)
+        bbox_x_offset = bbox[0]
+        bbox_y_offset = bbox[1]
+
+        # Vertical center - account for the bbox offset
+        y = (height - text_height) // 2 - bbox_y_offset
+
+        # Horizontal alignment - account for bbox offset
+        if align == "center":
+            x = (width - text_width) // 2 - bbox_x_offset
+        elif align == "right":
+            x = width - text_width - padding - bbox_x_offset
+        else:  # left
+            x = padding - bbox_x_offset
+
+        # Draw text
         draw.text((x, y), text, font=font, fill=(*color, 255))
 
-        # Convert to OpenCV format (BGRA)
+        # Convert to numpy for OpenCV processing
         cv_img = cv2.cvtColor(np.array(img), cv2.COLOR_RGBA2BGRA)
+
+        # Apply edge feathering for smoother blending
+        if edge_feather > 0 and bg_color:
+            # Create a mask for the edges
+            h, w = cv_img.shape[:2]
+
+            # Create gradient mask for edges
+            mask = np.ones((h, w), dtype=np.float32)
+
+            # Feather top edge
+            for i in range(min(edge_feather, h)):
+                mask[i, :] = i / edge_feather
+            # Feather bottom edge
+            for i in range(min(edge_feather, h)):
+                mask[h - 1 - i, :] = i / edge_feather
+            # Feather left edge
+            for i in range(min(edge_feather, w)):
+                mask[:, i] = np.minimum(mask[:, i], i / edge_feather)
+            # Feather right edge
+            for i in range(min(edge_feather, w)):
+                mask[:, w - 1 - i] = np.minimum(mask[:, w - 1 - i], i / edge_feather)
+
+            # Apply to alpha channel
+            alpha = cv_img[:, :, 3].astype(np.float32) / 255.0
+            alpha = alpha * mask
+            cv_img[:, :, 3] = (alpha * 255).astype(np.uint8)
 
         return ReplacementAsset(image=cv_img, width=width, height=height)
 
@@ -145,6 +277,80 @@ class VisualReplacer:
             width=img.shape[1],
             height=img.shape[0],
         )
+
+    def sample_text_color(
+        self,
+        frame: np.ndarray,
+        bbox: BoundingBox,
+    ) -> tuple[int, int, int]:
+        """
+        Sample the text color from the center of a region.
+
+        Text is usually in the center and has high contrast with background.
+        We find the color that's most different from the edge background.
+
+        Returns (R, G, B) color tuple.
+        """
+        frame_h, frame_w = frame.shape[:2]
+        x, y, w, h = bbox.to_pixels(frame_w, frame_h)
+
+        # Clamp to frame bounds
+        x1 = max(0, x)
+        y1 = max(0, y)
+        x2 = min(frame_w, x + w)
+        y2 = min(frame_h, y + h)
+
+        if x2 <= x1 or y2 <= y1:
+            return (255, 255, 255)  # Default white
+
+        roi = frame[y1:y2, x1:x2]
+        roi_h, roi_w = roi.shape[:2]
+
+        # Sample from center region (where text likely is)
+        center_margin_h = max(1, roi_h // 4)
+        center_margin_w = max(1, roi_w // 4)
+
+        center_region = roi[center_margin_h:-center_margin_h, center_margin_w:-center_margin_w]
+
+        if center_region.size == 0:
+            center_region = roi
+
+        # Get the background color first
+        bg_color = self.sample_background_color(frame, bbox)
+        bg_brightness = (bg_color[0] + bg_color[1] + bg_color[2]) / 3
+
+        # Sample center pixels and find the one most different from background
+        center_pixels = center_region[:, :, :3].reshape(-1, 3)
+
+        if len(center_pixels) == 0:
+            # Return contrasting color based on background
+            if bg_brightness > 128:
+                return (0, 0, 0)  # Dark text on light bg
+            else:
+                return (255, 255, 255)  # Light text on dark bg
+
+        # Calculate brightness difference from background for each pixel
+        pixel_brightness = np.mean(center_pixels, axis=1)
+
+        # Find pixels with highest contrast to background
+        if bg_brightness > 128:
+            # Light background - look for darker pixels
+            contrast_pixels = center_pixels[pixel_brightness < bg_brightness - 30]
+        else:
+            # Dark background - look for lighter pixels
+            contrast_pixels = center_pixels[pixel_brightness > bg_brightness + 30]
+
+        if len(contrast_pixels) > 0:
+            # Average of contrasting pixels (likely the text)
+            mean_color = np.mean(contrast_pixels, axis=0)
+            # Convert BGR to RGB
+            return (int(mean_color[2]), int(mean_color[1]), int(mean_color[0]))
+
+        # Fallback: return contrasting color
+        if bg_brightness > 128:
+            return (0, 0, 0)
+        else:
+            return (255, 255, 255)
 
     def sample_background_color(
         self,
@@ -207,6 +413,7 @@ class VisualReplacer:
         bbox: BoundingBox,
         fill_background: bool = True,
         bg_color: tuple[int, int, int] = None,
+        blur_edges: bool = True,
     ) -> np.ndarray:
         """
         Composite a replacement asset onto a frame.
@@ -219,14 +426,19 @@ class VisualReplacer:
             bbox: Bounding box for placement
             fill_background: If True, fill the region with bg_color first
             bg_color: Background color (R, G, B) to fill before compositing
+            blur_edges: If True, apply Gaussian blur to edges for smoother blending
         """
         frame_h, frame_w = frame.shape[:2]
 
         # Convert bbox to pixels
         x, y, w, h = bbox.to_pixels(frame_w, frame_h)
 
-        # Resize asset to fit bbox
-        resized = cv2.resize(asset.image, (w, h))
+        # Ensure minimum dimensions
+        w = max(w, 1)
+        h = max(h, 1)
+
+        # Resize asset to fit bbox with high-quality interpolation
+        resized = cv2.resize(asset.image, (w, h), interpolation=cv2.INTER_LANCZOS4)
 
         # Ensure we don't go out of bounds
         x1 = max(0, x)
@@ -248,8 +460,41 @@ class VisualReplacer:
             if bg_color is None:
                 # Sample background from current region
                 bg_color = self.sample_background_color(frame, bbox)
-            # Fill with background color (convert RGB to BGR for OpenCV)
-            frame[y1:y2, x1:x2] = (bg_color[2], bg_color[1], bg_color[0])
+
+            # Create a slightly blurred background fill for smoother blending
+            bg_fill = np.full((y2 - y1, x2 - x1, 3), (bg_color[2], bg_color[1], bg_color[0]), dtype=np.uint8)
+
+            if blur_edges:
+                # Apply slight Gaussian blur to the existing region before replacing
+                # This helps blend the edges more naturally
+                blur_size = max(3, min(9, (y2 - y1) // 10, (x2 - x1) // 10))
+                if blur_size % 2 == 0:
+                    blur_size += 1
+
+                # Blend original edges with background color
+                original_roi = frame[y1:y2, x1:x2].copy()
+                blurred_original = cv2.GaussianBlur(original_roi, (blur_size, blur_size), 0)
+
+                # Create edge mask - stronger background in center, blend at edges
+                edge_h, edge_w = bg_fill.shape[:2]
+                edge_mask = np.ones((edge_h, edge_w), dtype=np.float32)
+
+                edge_size = max(2, min(edge_h, edge_w) // 8)
+                for i in range(edge_size):
+                    blend = i / edge_size
+                    if i < edge_h:
+                        edge_mask[i, :] = blend
+                        edge_mask[edge_h - 1 - i, :] = np.minimum(edge_mask[edge_h - 1 - i, :], blend)
+                    if i < edge_w:
+                        edge_mask[:, i] = np.minimum(edge_mask[:, i], blend)
+                        edge_mask[:, edge_w - 1 - i] = np.minimum(edge_mask[:, edge_w - 1 - i], blend)
+
+                # Blend: center is bg_fill, edges blend with blurred original
+                edge_mask_3d = edge_mask[:, :, np.newaxis]
+                blended_bg = (edge_mask_3d * bg_fill + (1 - edge_mask_3d) * blurred_original).astype(np.uint8)
+                frame[y1:y2, x1:x2] = blended_bg
+            else:
+                frame[y1:y2, x1:x2] = bg_fill
 
         # Extract regions
         roi = frame[y1:y2, x1:x2]

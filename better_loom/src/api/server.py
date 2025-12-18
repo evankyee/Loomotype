@@ -1107,6 +1107,7 @@ async def process_visual_render(
         # Create visual segments and assets from text replacements
         segments = []
         assets = {}
+        segment_info = {}  # Store info for color sampling
 
         for i, replacement in enumerate(text_replacements):
             segment_id = f"text_{i}"
@@ -1130,26 +1131,85 @@ async def process_visual_render(
             pixel_width = int(replacement.width * frame_width / 100)
             pixel_height = int(replacement.height * frame_height / 100)
 
-            # Determine background color - sample from video if not specified
-            bg_color = None
-            if replacement.bg_color:
-                # Parse color like "black" or "#000000"
-                bg_color = (0, 0, 0)  # Default black
+            # Store segment info for later color sampling
+            segment_info[segment_id] = {
+                "replacement": replacement,
+                "pixel_width": pixel_width,
+                "pixel_height": pixel_height,
+            }
 
-            asset = replacer.create_text_asset(
-                text=replacement.new_text,
-                width=pixel_width,
-                height=pixel_height,
-                font_size=max(16, pixel_height - 8),
-                color=(255, 255, 255),  # White text
-                bg_color=bg_color,
-            )
-            assets[segment_id] = asset
+        # Sample colors from the first frame of the video
+        import cv2
+        cap = cv2.VideoCapture(str(video_path))
+        if cap.isOpened():
+            ret, first_frame = cap.read()
+            cap.release()
 
-            logger.info(
-                f"Created replacement: '{replacement.original_text}' → '{replacement.new_text}' "
-                f"at ({replacement.x}, {replacement.y})"
-            )
+            if ret:
+                from ..visual.tracker import BoundingBox
+
+                for segment_id, info in segment_info.items():
+                    replacement = info["replacement"]
+
+                    # Create bbox for color sampling (normalized 0-1)
+                    bbox = BoundingBox(
+                        x=replacement.x / 100,
+                        y=replacement.y / 100,
+                        width=replacement.width / 100,
+                        height=replacement.height / 100,
+                    )
+
+                    # Sample background and text colors
+                    bg_color = replacer.sample_background_color(first_frame, bbox)
+                    text_color = replacer.sample_text_color(first_frame, bbox)
+
+                    logger.info(
+                        f"Sampled colors for '{replacement.original_text}': "
+                        f"bg=RGB{bg_color}, text=RGB{text_color}"
+                    )
+
+                    # Create text asset with sampled colors and auto-scaling
+                    asset = replacer.create_text_asset(
+                        text=replacement.new_text,
+                        width=info["pixel_width"],
+                        height=info["pixel_height"],
+                        font_size=None,  # Auto-scale to fit
+                        color=text_color,
+                        bg_color=bg_color,
+                        align="left",  # UI text is usually left-aligned
+                    )
+                    assets[segment_id] = asset
+
+                    logger.info(
+                        f"Created replacement: '{replacement.original_text}' → '{replacement.new_text}' "
+                        f"at ({replacement.x}, {replacement.y})"
+                    )
+            else:
+                # Fallback if can't read frame - use defaults
+                for segment_id, info in segment_info.items():
+                    replacement = info["replacement"]
+                    asset = replacer.create_text_asset(
+                        text=replacement.new_text,
+                        width=info["pixel_width"],
+                        height=info["pixel_height"],
+                        font_size=None,
+                        color=(255, 255, 255),
+                        bg_color=None,
+                    )
+                    assets[segment_id] = asset
+        else:
+            # Fallback if can't open video
+            for segment_id, info in segment_info.items():
+                replacement = info["replacement"]
+                asset = replacer.create_text_asset(
+                    text=replacement.new_text,
+                    width=info["pixel_width"],
+                    height=info["pixel_height"],
+                    font_size=None,
+                    color=(255, 255, 255),
+                    bg_color=None,
+                )
+                assets[segment_id] = asset
 
         jobs_store[job_id]["progress"] = 40
 
