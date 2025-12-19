@@ -10,6 +10,13 @@ class SoronRecorder {
     this.recordingMode = 'screen-cam';
     this.hasEmbeddedBubble = false;
 
+    // Capture mode: 'fullscreen' (bubbles captured) vs 'window' (separate files)
+    this.captureMode = 'fullscreen';
+
+    // Separate camera recording for window mode (enables post-processing bubble control)
+    this.cameraRecorder = null;
+    this.cameraChunks = [];
+
     // Premium features - metadata tracking
     this.recordingStartTime = null;
     this.clicks = [];           // Auto-zoom feature
@@ -183,13 +190,13 @@ class SoronRecorder {
     // Screen + Camera
     document.getElementById('record-screen-cam').addEventListener('click', async () => {
       this.recordingMode = 'screen-cam';
-      await this.selectSourceAndRecord(true);
+      await this.showSourcePicker(true);
     });
 
     // Screen Only
     document.getElementById('record-screen').addEventListener('click', async () => {
       this.recordingMode = 'screen';
-      await this.selectSourceAndRecord(false);
+      await this.showSourcePicker(false);
     });
 
     // Camera Only
@@ -221,6 +228,26 @@ class SoronRecorder {
     window.soron.onSettingsClosed(() => {
       settingsBtn.classList.remove('active');
     });
+
+    // Features popup - click toggle
+    const featuresBtn = document.getElementById('features-btn');
+    const featuresPopup = document.getElementById('features-popup');
+
+    if (featuresBtn && featuresPopup) {
+      featuresBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        featuresBtn.classList.toggle('active');
+        featuresPopup.classList.toggle('show');
+      });
+
+      // Close when clicking outside
+      document.addEventListener('click', (e) => {
+        if (!featuresPopup.contains(e.target) && e.target !== featuresBtn) {
+          featuresBtn.classList.remove('active');
+          featuresPopup.classList.remove('show');
+        }
+      });
+    }
   }
 
   setupEventListeners() {
@@ -237,20 +264,67 @@ class SoronRecorder {
     });
   }
 
+  async showSourcePicker(includeCamera) {
+    // Get available sources
+    const sources = await window.soron.getSources();
+    const screens = sources.filter(s => s.id.startsWith('screen:'));
+    const windows = sources.filter(s =>
+      s.id.startsWith('window:') &&
+      !s.name.toLowerCase().includes('soron')
+    );
+
+    // Show picker via IPC (main process will show native picker or custom UI)
+    const result = await window.soron.showSourcePicker({ screens, windows });
+
+    if (!result || result.cancelled) return;
+
+    this.captureMode = result.mode; // 'fullscreen' or 'window'
+    this.selectedSource = result.source;
+
+    // In fullscreen mode with camera, bubbles ARE the overlay (embedded)
+    // In window mode with camera, we use canvas compositing
+    this.hasEmbeddedBubble = this.captureMode === 'fullscreen' && includeCamera;
+
+    await this.startRecording(includeCamera);
+  }
+
   async selectSourceAndRecord(includeCamera) {
     try {
       // Get available sources
       const sources = await window.soron.getSources();
 
-      // For now, just use the first screen
-      const screenSource = sources.find(s => s.id.startsWith('screen:'));
-      if (!screenSource) {
-        this.showNotification('No screen available');
-        return;
+      let selectedSource;
+
+      if (this.captureMode === 'window') {
+        // Window mode: Show picker for windows (excluding our app windows)
+        const windows = sources.filter(s =>
+          s.id.startsWith('window:') &&
+          !s.name.toLowerCase().includes('soron')
+        );
+
+        if (windows.length === 0) {
+          this.showNotification('No windows available');
+          return;
+        }
+
+        // For now, use the first window (TODO: add picker UI)
+        // Prefer active/focused windows
+        selectedSource = windows[0];
+        console.log('Window mode: capturing', selectedSource.name);
+      } else {
+        // Full screen mode: Use first screen
+        selectedSource = sources.find(s => s.id.startsWith('screen:'));
+        if (!selectedSource) {
+          this.showNotification('No screen available');
+          return;
+        }
+        console.log('Full screen mode: capturing entire screen');
       }
 
-      this.selectedSource = screenSource;
-      this.hasEmbeddedBubble = includeCamera;
+      this.selectedSource = selectedSource;
+      // In fullscreen mode with camera, bubbles ARE the overlay (embedded)
+      // In window mode with camera, we use canvas compositing
+      this.hasEmbeddedBubble = this.captureMode === 'fullscreen' && includeCamera;
       await this.startRecording(includeCamera);
 
     } catch (err) {
@@ -293,13 +367,38 @@ class SoronRecorder {
           .catch(() => null),
       ];
 
-      // Add camera if needed
+      // Add camera if needed - prefer built-in webcam over iPhone Continuity Camera
       if (includeCamera) {
         mediaPromises.push(
-          navigator.mediaDevices.getUserMedia({
-            video: { width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
-            audio: false
-          }).catch(() => null)
+          (async () => {
+            try {
+              // Get list of video devices
+              const devices = await navigator.mediaDevices.enumerateDevices();
+              const videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+              // Prefer built-in camera (FaceTime, iSight) over iPhone/external
+              const builtIn = videoDevices.find(d =>
+                d.label.toLowerCase().includes('facetime') ||
+                d.label.toLowerCase().includes('isight') ||
+                d.label.toLowerCase().includes('built-in')
+              );
+
+              const deviceId = builtIn?.deviceId || videoDevices[0]?.deviceId;
+
+              return navigator.mediaDevices.getUserMedia({
+                video: {
+                  deviceId: deviceId ? { exact: deviceId } : undefined,
+                  width: { ideal: 1280, min: 640 },
+                  height: { ideal: 720, min: 480 },
+                  frameRate: { ideal: 30 }
+                },
+                audio: false
+              });
+            } catch (e) {
+              console.error('Camera error:', e);
+              return null;
+            }
+          })()
         );
       }
 
@@ -307,16 +406,28 @@ class SoronRecorder {
       const [screenStream, audioStream, cameraStream] = await Promise.all(mediaPromises);
 
       let recordingStream;
-      if (cameraStream) {
-        recordingStream = await this.createCompositeStream(screenStream, cameraStream, audioStream);
+
+      // Full screen mode: bubble captured in screen recording
+      // Window mode: record screen + camera separately for post-processing control
+      if (cameraStream && this.captureMode === 'window') {
+        // Window mode: Record screen and camera SEPARATELY
+        // This enables post-processing bubble control (position, size, visibility)
+        const tracks = [...screenStream.getVideoTracks()];
+        if (audioStream) tracks.push(...audioStream.getAudioTracks());
+        recordingStream = new MediaStream(tracks);
+
+        // Start separate camera recording
+        this.startCameraRecording(cameraStream);
       } else {
+        // Full screen mode OR no camera: record screen directly
+        // Camera bubble window will be captured as part of screen
         const tracks = [...screenStream.getVideoTracks()];
         if (audioStream) tracks.push(...audioStream.getAudioTracks());
         recordingStream = new MediaStream(tracks);
       }
 
       this.startMediaRecording(recordingStream);
-      await window.soron.recordingStarted(sourceId, includeCamera);
+      await window.soron.recordingStarted(sourceId, includeCamera, this.captureMode);
 
     } catch (err) {
       console.error('Error starting recording:', err);
@@ -379,14 +490,18 @@ class SoronRecorder {
         const camW = c.w * W;
         const camH = c.h * H;
 
-        // Calculate camera source crop (center crop for square aspect)
-        const camAspect = cameraVideo.videoWidth / cameraVideo.videoHeight;
+        // Calculate camera source crop to match destination aspect ratio
+        const srcAspect = cameraVideo.videoWidth / cameraVideo.videoHeight;
+        const dstAspect = camW / camH;
         let srcX = 0, srcY = 0, srcW = cameraVideo.videoWidth, srcH = cameraVideo.videoHeight;
-        if (camAspect > 1) {
-          srcW = cameraVideo.videoHeight;
+
+        if (srcAspect > dstAspect) {
+          // Source is wider - crop sides
+          srcW = cameraVideo.videoHeight * dstAspect;
           srcX = (cameraVideo.videoWidth - srcW) / 2;
         } else {
-          srcH = cameraVideo.videoWidth;
+          // Source is taller - crop top/bottom
+          srcH = cameraVideo.videoWidth / dstAspect;
           srcY = (cameraVideo.videoHeight - srcH) / 2;
         }
 
@@ -489,13 +604,32 @@ class SoronRecorder {
     this.mediaRecorder.start(100);
   }
 
+  // Start separate camera recording for window mode (enables post-processing bubble control)
+  startCameraRecording(cameraStream) {
+    this.cameraChunks = [];
+
+    const options = { mimeType: 'video/webm;codecs=vp9', videoBitsPerSecond: 2000000 };
+    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+      options.mimeType = 'video/webm;codecs=vp8';
+    }
+
+    this.cameraRecorder = new MediaRecorder(cameraStream, options);
+    this.cameraRecorder.ondataavailable = (e) => {
+      if (e.data.size > 0) this.cameraChunks.push(e.data);
+    };
+    this.cameraRecorder.start(100);
+    console.log('Camera recording started (separate file for post-processing)');
+  }
+
   togglePause() {
     if (!this.mediaRecorder) return;
     if (this.isPaused) {
       this.mediaRecorder.resume();
+      if (this.cameraRecorder) this.cameraRecorder.resume();
       this.isPaused = false;
     } else {
       this.mediaRecorder.pause();
+      if (this.cameraRecorder) this.cameraRecorder.pause();
       this.isPaused = true;
     }
   }
@@ -504,8 +638,14 @@ class SoronRecorder {
     if (!this.mediaRecorder || !this.isRecording) return;
     this.isRecording = false;
     this.recordedChunks = [];
+    this.cameraChunks = [];
     this.mediaRecorder.stop();
     this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
+    if (this.cameraRecorder) {
+      this.cameraRecorder.stop();
+      this.cameraRecorder.stream.getTracks().forEach(track => track.stop());
+      this.cameraRecorder = null;
+    }
     window.soron.recordingStopped();
   }
 
@@ -513,7 +653,15 @@ class SoronRecorder {
     if (!this.mediaRecorder || !this.isRecording) return;
 
     this.isRecording = false;
-    this.stopCursorTracking(); // Stop cursor tracking
+    this.stopCursorTracking();
+
+    // Stop camera recorder first (if exists) and wait for it
+    if (this.cameraRecorder && this.cameraRecorder.state !== 'inactive') {
+      this.cameraRecorder.stop();
+      this.cameraRecorder.stream.getTracks().forEach(track => track.stop());
+    }
+
+    // Stop main recorder (triggers saveRecording via onstop)
     this.mediaRecorder.stop();
     this.mediaRecorder.stream.getTracks().forEach(track => track.stop());
 
@@ -542,6 +690,16 @@ class SoronRecorder {
     // Calculate recording duration
     const duration = this.recordingStartTime ? (Date.now() - this.recordingStartTime) / 1000 : 0;
 
+    // Check if we have separate camera recording (window mode)
+    const hasSeparateCamera = this.cameraChunks.length > 0;
+    let cameraBlob = null;
+    let cameraFilename = null;
+
+    if (hasSeparateCamera) {
+      cameraBlob = new Blob(this.cameraChunks, { type: 'video/webm' });
+      cameraFilename = `soron-camera-${timestamp}.webm`;
+    }
+
     // PERF: Run these in parallel
     const [buffer, trackedClicks] = await Promise.all([
       blob.arrayBuffer(),
@@ -553,14 +711,35 @@ class SoronRecorder {
       // Save video file
       const filePath = await window.soron.saveRecording(buffer, filename);
 
-      // Save metadata sidecar file
+      // Save camera file if exists
+      let cameraFilePath = null;
+      if (cameraBlob) {
+        const cameraBuffer = await cameraBlob.arrayBuffer();
+        cameraFilePath = await window.soron.saveRecording(cameraBuffer, cameraFilename);
+        console.log('Saved separate camera file:', cameraFilePath);
+      }
+
+      // Save metadata sidecar file (includes camera info for post-processing)
       const metadata = this.generateMetadata(filename, duration);
+      if (hasSeparateCamera) {
+        metadata.separateCamera = {
+          filename: cameraFilename,
+          bubbleSettings: {
+            position: 'bottom-left',
+            size: 0.25, // 25% of screen width
+            shape: 'circle',
+            visibility: [] // Array of {start, end, visible} for time-based visibility
+          }
+        };
+      }
       await window.soron.saveMetadata(filename, metadata);
 
       await window.soron.recordingStopped();
 
       // PERF: Clear chunks immediately to free memory
       this.recordedChunks = [];
+      this.cameraChunks = [];
+      this.cameraRecorder = null;
 
       // Check auto-upload setting (local-first feature)
       const autoUpload = await window.soron.getStore('autoUpload');
@@ -569,7 +748,12 @@ class SoronRecorder {
       if (shouldUpload) {
         this.showNotification('Recording saved, uploading...');
 
-        const uploadResult = await window.soron.uploadForPersonalization(filePath, null, this.hasEmbeddedBubble);
+        // Upload with camera file path if exists
+        const uploadResult = await window.soron.uploadForPersonalization(
+          filePath,
+          cameraFilePath, // Pass camera file for separate compositing
+          this.hasEmbeddedBubble
+        );
         await this.triggerProcessing(uploadResult.video_id);
 
         const editorUrl = `http://localhost:3000?video=${uploadResult.video_id}`;
@@ -655,3 +839,46 @@ class SoronRecorder {
 
 // Initialize
 const app = new SoronRecorder();
+
+// Mouse event forwarding for transparent areas
+// When mouse is over transparent parts, let events pass through to apps behind
+(function setupMouseForwarding() {
+  const controlBar = document.querySelector('.control-bar');
+  const featuresPopup = document.getElementById('features-popup');
+
+  if (!controlBar) return;
+
+  let isIgnoring = false;
+
+  // Check if element or any parent is interactive
+  function isOverInteractive(el) {
+    while (el) {
+      if (el === controlBar || el === featuresPopup) return true;
+      if (el.classList && (el.classList.contains('control-bar') || el.classList.contains('features-popup'))) return true;
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  // Track mouse movement to toggle ignore state
+  document.addEventListener('mousemove', (e) => {
+    const shouldIgnore = !isOverInteractive(e.target);
+
+    if (shouldIgnore !== isIgnoring) {
+      isIgnoring = shouldIgnore;
+      if (shouldIgnore) {
+        window.soron.setIgnoreMouseEvents(true, { forward: true });
+      } else {
+        window.soron.setIgnoreMouseEvents(false);
+      }
+    }
+  });
+
+  // When mouse leaves window entirely, reset to not ignoring
+  document.addEventListener('mouseleave', () => {
+    if (isIgnoring) {
+      isIgnoring = false;
+      window.soron.setIgnoreMouseEvents(false);
+    }
+  });
+})();

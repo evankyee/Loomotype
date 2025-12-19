@@ -2,6 +2,9 @@ const { contextBridge, ipcRenderer } = require('electron');
 
 // Expose protected methods to renderer
 contextBridge.exposeInMainWorld('soron', {
+  // Mouse event forwarding (for click-through on transparent areas)
+  setIgnoreMouseEvents: (ignore, options) => ipcRenderer.send('set-ignore-mouse-events', ignore, options),
+
   // Screen capture
   getSources: () => ipcRenderer.invoke('get-sources'),
 
@@ -24,8 +27,13 @@ contextBridge.exposeInMainWorld('soron', {
   stopClickTracking: () => ipcRenderer.invoke('stop-click-tracking'),
   addClickEvent: () => ipcRenderer.invoke('add-click-event'),
 
+  // Source picker
+  showSourcePicker: (options) => ipcRenderer.invoke('show-source-picker', options),
+  sourcePickerSelect: (result) => ipcRenderer.invoke('source-picker-select', result),
+  onPickerOptions: (callback) => ipcRenderer.on('picker-options', (event, options) => callback(options)),
+
   // Recording state
-  recordingStarted: (sourceId, includeCamera) => ipcRenderer.invoke('recording-started', sourceId, includeCamera),
+  recordingStarted: (sourceId, includeCamera, captureMode) => ipcRenderer.invoke('recording-started', sourceId, includeCamera, captureMode),
   recordingStopped: () => ipcRenderer.invoke('recording-stopped'),
   hideMainWindow: () => ipcRenderer.invoke('hide-main-window'),
   showRecordingHighlight: (sourceId) => ipcRenderer.invoke('show-recording-highlight', sourceId),
@@ -36,6 +44,7 @@ contextBridge.exposeInMainWorld('soron', {
   cancelRecording: () => ipcRenderer.invoke('cancel-recording-from-control'),
   togglePauseFromControl: () => ipcRenderer.invoke('toggle-pause-from-control'),
   switchLayout: (layout) => ipcRenderer.invoke('switch-layout', layout),
+  toggleSecondCamera: (deviceId) => ipcRenderer.invoke('toggle-second-camera', deviceId),
 
   // Settings
   getStore: (key) => ipcRenderer.invoke('get-store', key),

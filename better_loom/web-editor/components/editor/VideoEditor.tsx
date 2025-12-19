@@ -5,6 +5,7 @@ import { Timeline } from './Timeline';
 import { TranscriptEditor } from './TranscriptEditor';
 import { VisualSelector } from './VisualSelector';
 import { DetectionPanel } from './DetectionPanel';
+import { BubblePanel } from './BubblePanel';
 import { useEditorStore } from '@/lib/store';
 import { api } from '@/lib/api';
 
@@ -54,8 +55,13 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
   const [trimEnd, setTrimEnd] = useState(0);
 
   // Selection modes
-  const [selectionMode, setSelectionMode] = useState<'none' | 'visual' | 'transcript'>('none');
+  const [selectionMode, setSelectionMode] = useState<'none' | 'visual' | 'transcript' | 'bubble'>('none');
   const [visualSelections, setVisualSelections] = useState<VisualSelection[]>([]);
+
+  // Bubble composite state
+  const [bubbleJobId, setBubbleJobId] = useState<string | null>(null);
+  const [bubbleOutputUrl, setBubbleOutputUrl] = useState<string | null>(null);
+  const [bubbleError, setBubbleError] = useState<string | null>(null);
 
   // Highlight state for bidirectional sync between panel and video overlay
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -548,6 +554,40 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
             onHighlight={setHighlightedId}
           />
         )}
+
+        {/* Bubble Panel - shown when in bubble mode (hidden during preview) */}
+        {selectionMode === 'bubble' && !isPreviewMode && videoId && (
+          <div className="w-72 bg-surface border-l border-border-subtle overflow-y-auto">
+            <BubblePanel
+              videoId={videoId}
+              duration={duration}
+              currentTime={currentTime}
+              onCompositeStart={(jobId) => {
+                setBubbleJobId(jobId);
+                setBubbleError(null);
+              }}
+              onCompositeComplete={(outputUrl) => {
+                setBubbleOutputUrl(outputUrl);
+                // Switch video source to composite
+                if (videoRef.current) {
+                  const fullUrl = `${window.location.origin.replace(':3000', ':8000')}${outputUrl}`;
+                  videoRef.current.src = fullUrl;
+                  videoRef.current.load();
+                }
+              }}
+              onCompositeError={(error) => {
+                setBubbleError(error);
+              }}
+            />
+            {bubbleError && (
+              <div className="px-4 pb-4">
+                <div className="text-xs text-danger bg-danger/10 rounded-md p-2">
+                  {bubbleError}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Controls bar - refined, compact */}
@@ -631,6 +671,16 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
               }`}
             >
               Select
+            </button>
+            <button
+              onClick={() => setSelectionMode('bubble')}
+              className={`px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 ${
+                selectionMode === 'bubble'
+                  ? 'bg-primary text-white shadow-sm'
+                  : 'text-foreground-muted hover:text-foreground-secondary'
+              }`}
+            >
+              Camera
             </button>
           </div>
 

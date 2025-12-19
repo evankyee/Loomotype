@@ -16,18 +16,20 @@ echo "Region: ${REGION}"
 echo "📦 Building container..."
 gcloud builds submit --tag ${IMAGE_NAME} .
 
-# Deploy to Cloud Run
-echo "🌐 Deploying to Cloud Run..."
+# Deploy to Cloud Run (optimized for video processing)
+echo "🌐 Deploying to Cloud Run (8 CPU, 8GB RAM, Gen2)..."
 gcloud run deploy ${SERVICE_NAME} \
   --image ${IMAGE_NAME} \
   --platform managed \
   --region ${REGION} \
-  --memory 2Gi \
-  --cpu 2 \
-  --timeout 300 \
-  --concurrency 10 \
+  --memory 8Gi \
+  --cpu 8 \
+  --timeout 3600 \
+  --concurrency 4 \
   --min-instances 0 \
   --max-instances 10 \
+  --cpu-boost \
+  --execution-environment gen2 \
   --allow-unauthenticated \
   --set-env-vars "ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}" \
   --set-env-vars "GOOGLE_CLOUD_PROJECT=${PROJECT_ID}"

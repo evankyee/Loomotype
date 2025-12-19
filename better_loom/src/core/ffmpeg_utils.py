@@ -44,6 +44,99 @@ def run_ffmpeg(args: list[str], description: str = "FFmpeg operation") -> str:
     return result.stdout
 
 
+# Cache hardware encoder availability check
+_hw_encoder: Optional[str] = None  # "videotoolbox", "nvenc", or None
+
+
+def detect_hardware_encoder() -> Optional[str]:
+    """
+    Detect best available hardware encoder.
+
+    Returns:
+        "videotoolbox" (macOS), "nvenc" (NVIDIA GPU), or None (CPU only)
+    """
+    global _hw_encoder
+    if _hw_encoder is not None:
+        return _hw_encoder if _hw_encoder != "none" else None
+
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-encoders"],
+            capture_output=True,
+            text=True,
+        )
+        encoders = result.stdout
+
+        # Check in order of preference
+        if "h264_videotoolbox" in encoders:
+            _hw_encoder = "videotoolbox"
+            logger.info("VideoToolbox hardware encoder available (macOS) - 5-10x faster")
+        elif "h264_nvenc" in encoders:
+            _hw_encoder = "nvenc"
+            logger.info("NVENC hardware encoder available (NVIDIA GPU) - 5-10x faster")
+        else:
+            _hw_encoder = "none"
+            logger.info("No hardware encoder available - using optimized CPU encoding")
+
+        return _hw_encoder if _hw_encoder != "none" else None
+    except Exception:
+        _hw_encoder = "none"
+        return None
+
+
+def get_cpu_thread_count() -> int:
+    """Get optimal thread count for FFmpeg (leave 1-2 cores for system)."""
+    import os
+    cores = os.cpu_count() or 4
+    return max(1, cores - 1)  # Leave 1 core for system
+
+
+def get_video_encoding_args(quality: str = "balanced") -> list[str]:
+    """
+    Get optimal video encoding arguments based on quality preset and hardware.
+
+    Automatically uses:
+    - VideoToolbox on macOS (5-10x faster)
+    - NVENC on systems with NVIDIA GPU (5-10x faster)
+    - Optimized multi-threaded libx264 on CPU (production servers)
+
+    Args:
+        quality: "fast" (quick preview), "balanced" (default), "ultra" (best quality)
+
+    Returns:
+        List of FFmpeg arguments for video encoding
+    """
+    hw_encoder = detect_hardware_encoder()
+    threads = get_cpu_thread_count()
+
+    if hw_encoder == "videotoolbox":
+        # macOS VideoToolbox hardware encoding
+        quality_map = {
+            "fast": ["-c:v", "h264_videotoolbox", "-q:v", "65"],
+            "balanced": ["-c:v", "h264_videotoolbox", "-q:v", "50"],
+            "ultra": ["-c:v", "h264_videotoolbox", "-q:v", "35"],
+        }
+    elif hw_encoder == "nvenc":
+        # NVIDIA NVENC hardware encoding
+        # preset: p1 (fastest) to p7 (slowest/best quality)
+        # cq: constant quality (0-51, lower = better)
+        quality_map = {
+            "fast": ["-c:v", "h264_nvenc", "-preset", "p1", "-cq", "28"],
+            "balanced": ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "23"],
+            "ultra": ["-c:v", "h264_nvenc", "-preset", "p7", "-cq", "18"],
+        }
+    else:
+        # Optimized CPU encoding for production servers
+        # Uses all available cores for maximum speed
+        quality_map = {
+            "fast": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23", "-threads", str(threads)],
+            "balanced": ["-c:v", "libx264", "-preset", "fast", "-crf", "18", "-threads", str(threads)],
+            "ultra": ["-c:v", "libx264", "-preset", "slow", "-crf", "15", "-threads", str(threads)],
+        }
+
+    return quality_map.get(quality, quality_map["balanced"])
+
+
 class FFmpegProcessor:
     """
     High-level FFmpeg operations for video personalization.
@@ -79,16 +172,14 @@ class FFmpegProcessor:
 
         if reencode:
             # Frame-accurate but slower
-            # Normalize audio to 48000 Hz for consistency with original video
-            # Force keyframes every 1 second for browser compatibility
-            # Force 30fps output to fix WebM's incorrect fps metadata
+            # Use hardware encoding if available (5-10x faster on macOS)
+            video_enc_args = get_video_encoding_args("balanced")
+
             args = [
                 "-ss", str(start_time),
                 "-i", str(video_path),
                 "-t", str(duration),
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "18",
+                *video_enc_args,
                 "-r", "30",  # Force 30fps output (fixes WebM 1000fps metadata bug)
                 "-g", "30",  # Keyframe every 30 frames (~1 sec at 30fps)
                 "-keyint_min", "30",  # Minimum keyframe interval
@@ -771,12 +862,13 @@ class FFmpegProcessor:
         else:
             audio_map = "1:a?"  # Use lip-synced bubble audio
 
+        # Use hardware encoding if available (5-10x faster on macOS)
+        video_enc_args = get_video_encoding_args("balanced")
+
         args.extend([
             "-filter_complex", filter_complex,
             "-map", "[vout]",  # Always use the composited overlay video
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *video_enc_args,
             "-r", "30",
             "-c:a", "aac",
             "-ar", "48000",
@@ -799,6 +891,11 @@ class FFmpegProcessor:
         padding: int = 20,
         border_radius: int = 90,  # For circular bubble
         use_camera_audio: bool = False,  # Use camera audio (for lip-synced content)
+        shape: str = "circle",  # circle, square, rounded
+        custom_x: int = None,  # Custom x position (pixels)
+        custom_y: int = None,  # Custom y position (pixels)
+        visibility_filter: str = None,  # FFmpeg enable expression for time-based visibility
+        quality: str = "balanced",  # fast, balanced, ultra
     ) -> Path:
         """
         Overlay camera video as a bubble onto screen recording.
@@ -810,12 +907,17 @@ class FFmpegProcessor:
             screen_video: Main screen recording
             camera_video: Camera video (lip-synced) to overlay
             output_path: Where to save result
-            position: "bottom-right", "bottom-left", "top-right", "top-left"
+            position: "bottom-right", "bottom-left", "top-right", "top-left", "custom"
             bubble_size: Size of the bubble in pixels
             padding: Padding from screen edges
             border_radius: Radius for rounded corners (use bubble_size/2 for circle)
             use_camera_audio: If True, use audio from camera video (for lip-synced segments
                              with ElevenLabs audio). If False, use audio from screen.
+            shape: Bubble shape - "circle", "square", or "rounded"
+            custom_x: Custom x position in pixels (when position="custom")
+            custom_y: Custom y position in pixels (when position="custom")
+            visibility_filter: FFmpeg enable expression for time-based visibility
+            quality: Encoding quality preset
 
         Returns:
             Path to composited video
@@ -824,8 +926,11 @@ class FFmpegProcessor:
         screen_w = screen_info.width
         screen_h = screen_info.height
 
-        # Calculate position based on screen size
-        if position == "bottom-right":
+        # Calculate position based on screen size or use custom
+        if position == "custom" and custom_x is not None and custom_y is not None:
+            x = custom_x
+            y = custom_y
+        elif position == "bottom-right":
             x = screen_w - bubble_size - padding
             y = screen_h - bubble_size - padding
         elif position == "bottom-left":
@@ -841,7 +946,7 @@ class FFmpegProcessor:
             x = screen_w - bubble_size - padding
             y = screen_h - bubble_size - padding
 
-        logger.info(f"Overlaying camera bubble at ({x}, {y}), size {bubble_size}x{bubble_size}")
+        logger.info(f"Overlaying camera bubble at ({x}, {y}), size {bubble_size}x{bubble_size}, shape={shape}")
         logger.info(f"Audio source: {'camera (lip-synced)' if use_camera_audio else 'screen'}")
         logger.info(f"Screen: {screen_w}x{screen_h} @ {screen_info.fps}fps")
 
@@ -865,20 +970,47 @@ class FFmpegProcessor:
         # Calculate radius for circle (half of bubble size)
         radius = bubble_size // 2
 
+        # Build shape-specific filter
+        if shape == "circle":
+            # Circular mask using geq
+            shape_filter = (
+                f"format=rgba,"
+                f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(X-{radius},2)+pow(Y-{radius},2),pow({radius},2)),255,0)'"
+            )
+        elif shape == "rounded":
+            # Rounded corners (less aggressive than full circle)
+            corner_radius = bubble_size // 6
+            shape_filter = (
+                f"format=rgba,"
+                f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if("
+                f"(X<{corner_radius})*(Y<{corner_radius})*gt(pow(X-{corner_radius},2)+pow(Y-{corner_radius},2),pow({corner_radius},2))+"
+                f"(X>{bubble_size-corner_radius})*(Y<{corner_radius})*gt(pow(X-{bubble_size-corner_radius},2)+pow(Y-{corner_radius},2),pow({corner_radius},2))+"
+                f"(X<{corner_radius})*(Y>{bubble_size-corner_radius})*gt(pow(X-{corner_radius},2)+pow(Y-{bubble_size-corner_radius},2),pow({corner_radius},2))+"
+                f"(X>{bubble_size-corner_radius})*(Y>{bubble_size-corner_radius})*gt(pow(X-{bubble_size-corner_radius},2)+pow(Y-{bubble_size-corner_radius},2),pow({corner_radius},2)),"
+                f"0,255)'"
+            )
+        else:  # square
+            shape_filter = "format=rgba"  # No alpha masking needed for square
+
+        # Build overlay with optional visibility filter
+        overlay_params = f"{x}:{y}:format=auto:shortest=1"
+        if visibility_filter:
+            overlay_params += f":enable='{visibility_filter}'"
+            logger.info(f"Time-based visibility: {visibility_filter}")
+
         # Simpler, more reliable filter approach:
         # 1. Normalize screen fps
         # 2. Scale and crop camera to square
-        # 3. Apply circular mask directly using geq with alpha channel
+        # 3. Apply shape mask
         # 4. Overlay onto screen
         filter_complex = (
             # Normalize screen to target fps (WebM files report wrong fps)
             f"[0:v]fps={target_fps}[screen];"
-            # Normalize camera fps, scale to bubble size, crop to square, apply circular alpha mask
+            # Normalize camera fps, scale to bubble size, crop to square, apply shape mask
             f"[1:v]fps={target_fps},scale={bubble_size}:{bubble_size}:force_original_aspect_ratio=increase,"
-            f"crop={bubble_size}:{bubble_size},format=rgba,"
-            f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(X-{radius},2)+pow(Y-{radius},2),pow({radius},2)),255,0)'[cam];"
+            f"crop={bubble_size}:{bubble_size},{shape_filter}[cam];"
             # Overlay camera onto normalized screen
-            f"[screen][cam]overlay={x}:{y}:format=auto:shortest=1"
+            f"[screen][cam]overlay={overlay_params}"
         )
 
         # Choose audio source:
@@ -886,13 +1018,14 @@ class FFmpegProcessor:
         # - For non-lip-synced: use screen audio (0:a) which has original recording
         audio_map = "1:a?" if use_camera_audio else "0:a?"
 
+        # Use hardware encoding if available (5-10x faster on macOS)
+        video_enc_args = get_video_encoding_args(quality)
+
         args = [
             "-i", str(screen_video),
             "-i", str(camera_video),
             "-filter_complex", filter_complex,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *video_enc_args,
             "-r", str(target_fps),  # Output framerate matches screen
             "-c:a", "aac",
             "-ar", "48000",
@@ -1008,12 +1141,13 @@ class FFmpegProcessor:
             f"d=1:fps={fps}:s={width}x{height}"
         )
 
+        # Use hardware encoding if available (5-10x faster on macOS)
+        video_enc_args = get_video_encoding_args("balanced")
+
         args = [
             "-i", str(video_path),
             "-vf", zoom_filter,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *video_enc_args,
             "-c:a", "copy",
             str(output_path),
         ]
@@ -1112,12 +1246,13 @@ class FFmpegProcessor:
 
             filter_complex = ";".join(parts)
 
+        # Use hardware encoding if available (5-10x faster on macOS)
+        video_enc_args = get_video_encoding_args("balanced")
+
         args = [
             "-i", str(video_path),
             "-filter_complex", filter_complex,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *video_enc_args,
             "-c:a", "copy",
             str(output_path),
         ]

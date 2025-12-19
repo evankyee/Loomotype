@@ -89,15 +89,49 @@
   <script>
     async function startCamera() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        // Check for deviceId in URL params (for secondary camera)
+        const urlParams = new URLSearchParams(window.location.search);
+        const requestedDeviceId = urlParams.get('deviceId');
+        const isSecondary = urlParams.get('secondary') === 'true';
+
+        let deviceId = requestedDeviceId;
+
+        // If no specific device requested, auto-select based on primary/secondary
+        if (!deviceId) {
+          const devices = await navigator.mediaDevices.enumerateDevices();
+          const videoDevices = devices.filter(d => d.kind === 'videoinput');
+
+          if (isSecondary) {
+            // Secondary: prefer iPhone/external camera
+            const external = videoDevices.find(d =>
+              d.label.toLowerCase().includes('iphone') ||
+              d.label.toLowerCase().includes('continuity') ||
+              (!d.label.toLowerCase().includes('facetime') &&
+               !d.label.toLowerCase().includes('isight') &&
+               !d.label.toLowerCase().includes('built-in'))
+            );
+            deviceId = external?.deviceId || videoDevices[videoDevices.length - 1]?.deviceId;
+          } else {
+            // Primary: prefer built-in camera
+            const builtIn = videoDevices.find(d =>
+              d.label.toLowerCase().includes('facetime') ||
+              d.label.toLowerCase().includes('isight') ||
+              d.label.toLowerCase().includes('built-in')
+            );
+            deviceId = builtIn?.deviceId || videoDevices[0]?.deviceId;
+          }
+        }
+
+        const constraints = {
           video: {
-            width: { ideal: 480 },
-            height: { ideal: 480 },
-            facingMode: 'user'
+            deviceId: deviceId ? { exact: deviceId } : undefined,
+            width: { ideal: 720 },
+            height: { ideal: 720 },
           },
           audio: false
-        });
+        };
 
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
         const video = document.getElementById('camera');
         video.srcObject = stream;
         document.getElementById('loading').style.display = 'none';

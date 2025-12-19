@@ -29,7 +29,7 @@ steps:
       - 'push'
       - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
 
-  # Deploy to Cloud Run
+  # Deploy to Cloud Run (optimized for video processing)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -44,13 +44,16 @@ steps:
       - 'managed'
       - '--allow-unauthenticated'
       - '--memory'
-      - '4Gi'
+      - '8Gi'
       - '--cpu'
-      - '2'
+      - '8'
       - '--timeout'
       - '3600'
       - '--concurrency'
-      - '10'
+      - '4'
+      - '--cpu-boost'
+      - '--execution-environment'
+      - 'gen2'
       - '--set-env-vars'
       - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_REGION}'
 

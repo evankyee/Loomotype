@@ -6,6 +6,7 @@ Supports both IVC (Instant) and PVC (Professional) voice cloning.
 """
 
 import os
+import hashlib
 import tempfile
 from pathlib import Path
 from loguru import logger
@@ -16,6 +17,27 @@ from elevenlabs import VoiceSettings
 
 from ..core.ffmpeg_utils import FFmpegProcessor
 from ..core.video_info import get_audio_duration
+
+
+# Global TTS cache: hash(text + voice_id) -> (audio_path, duration)
+# Prevents regenerating the same audio for repeated requests
+_tts_cache: dict[str, tuple[Path, float]] = {}
+_tts_cache_dir: Optional[Path] = None
+
+
+def _get_tts_cache_dir() -> Path:
+    """Get or create the TTS cache directory."""
+    global _tts_cache_dir
+    if _tts_cache_dir is None:
+        _tts_cache_dir = Path(tempfile.gettempdir()) / "soron" / "tts_cache"
+        _tts_cache_dir.mkdir(parents=True, exist_ok=True)
+    return _tts_cache_dir
+
+
+def _get_cache_key(text: str, voice_id: str) -> str:
+    """Generate cache key from text and voice_id."""
+    content = f"{voice_id}:{text}"
+    return hashlib.sha256(content.encode()).hexdigest()[:16]
 
 
 class VoiceClient:
@@ -216,18 +238,32 @@ class VoiceClient:
         text: str,
         voice_id: str,
         output_path: Optional[Path] = None,
+        use_cache: bool = True,
     ) -> Path:
         """
-        Generate speech from text.
+        Generate speech from text with caching.
 
         Args:
             text: Text to speak
             voice_id: ElevenLabs voice ID
             output_path: Where to save (optional, creates temp file)
+            use_cache: Whether to use TTS cache (default True)
 
         Returns:
             Path to generated audio file (WAV format)
         """
+        # Check cache first (saves API calls and time)
+        cache_key = _get_cache_key(text, voice_id)
+        if use_cache and cache_key in _tts_cache:
+            cached_path, _ = _tts_cache[cache_key]
+            if cached_path.exists():
+                logger.debug(f"TTS cache hit: '{text[:30]}...'")
+                if output_path:
+                    import shutil
+                    shutil.copy(cached_path, output_path)
+                    return output_path
+                return cached_path
+
         logger.debug(f"Generating: '{text[:50]}...'")
 
         # Generate with ElevenLabs Pro using highest quality settings
@@ -249,11 +285,15 @@ class VoiceClient:
         # Collect audio bytes (PCM is raw 16-bit signed little-endian)
         audio_bytes = b"".join(audio_generator)
 
-        # Convert to WAV for processing
+        # Determine output path - use cache dir if caching
         if output_path is None:
-            fd, output_path = tempfile.mkstemp(suffix=".wav")
-            os.close(fd)
-            output_path = Path(output_path)
+            if use_cache:
+                cache_dir = _get_tts_cache_dir()
+                output_path = cache_dir / f"{cache_key}.wav"
+            else:
+                fd, output_path = tempfile.mkstemp(suffix=".wav")
+                os.close(fd)
+                output_path = Path(output_path)
 
         # Save raw PCM to temp file
         with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as f:
@@ -272,6 +312,12 @@ class VoiceClient:
             "-ar", str(self.sample_rate),  # Output at native 44.1kHz (highest quality)
             str(output_path),
         ], "Convert PCM to WAV")
+
+        # Cache the result
+        if use_cache:
+            duration = get_audio_duration(output_path)
+            _tts_cache[cache_key] = (output_path, duration)
+            logger.debug(f"TTS cached: '{text[:30]}...' ({duration:.2f}s)")
 
         # Clean up temp PCM
         temp_pcm.unlink()

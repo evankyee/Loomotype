@@ -593,6 +593,50 @@ class ApiService {
       }),
     });
   }
+
+  // ========== Camera Bubble Compositing ==========
+
+  async getVideoInfo(videoId: string): Promise<{
+    id: string;
+    has_camera: boolean;
+    camera_path?: string;
+    bubble_settings?: BubbleSettings;
+    duration: number;
+    width: number;
+    height: number;
+  }> {
+    return this.request(`/videos/${videoId}`);
+  }
+
+  async compositeBubble(
+    videoId: string,
+    settings: BubbleSettings,
+    preview: boolean = false
+  ): Promise<{ job_id: string; status: string; progress: number }> {
+    return this.request(`/videos/${videoId}/composite-bubble`, {
+      method: 'POST',
+      body: JSON.stringify({
+        bubble_settings: settings,
+        preview,
+      }),
+    });
+  }
+}
+
+// Bubble settings for camera overlay
+export interface BubbleVisibility {
+  start: number;
+  end: number;
+  visible: boolean;
+}
+
+export interface BubbleSettings {
+  position: 'bottom-left' | 'bottom-right' | 'top-left' | 'top-right' | 'custom';
+  custom_x?: number;  // 0-1 normalized
+  custom_y?: number;  // 0-1 normalized
+  size: number;       // 0-1 as fraction of screen width
+  shape: 'circle' | 'square' | 'rounded';
+  visibility: BubbleVisibility[];  // Time-based visibility
 }
 
 // Personalization field for templates

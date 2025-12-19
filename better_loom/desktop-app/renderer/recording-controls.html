@@ -11,41 +11,78 @@
       box-sizing: border-box;
     }
 
+    :root {
+      --text: rgba(255, 255, 255, 0.95);
+      --text-secondary: rgba(255, 255, 255, 0.7);
+      --text-tertiary: rgba(255, 255, 255, 0.45);
+      --hover: rgba(255, 255, 255, 0.15);
+    }
+
+    html, body {
+      background: transparent !important;
+      height: 100%;
+      overflow: hidden;
+    }
+
     body {
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+      -webkit-user-select: none;
+      user-select: none;
+      padding: 4px;
+    }
+
+    .app {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      padding-bottom: 6px;
+    }
+
+    /* Exact same as home bar */
+    .control-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 14px;
+      background: rgba(60, 60, 68, 0.75);
+      backdrop-filter: blur(50px) saturate(180%);
+      -webkit-backdrop-filter: blur(50px) saturate(180%);
+      border-radius: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      box-shadow:
+        0 8px 32px rgba(0, 0, 0, 0.25),
+        inset 0 1px 0 rgba(255, 255, 255, 0.15),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.1);
       -webkit-app-region: drag;
     }
 
-    .controls {
-      background: rgba(26, 26, 46, 0.95);
-      backdrop-filter: blur(20px);
-      border-radius: 16px;
-      padding: 16px 20px;
+    .divider {
+      width: 1px;
+      height: 24px;
+      background: rgba(255, 255, 255, 0.15);
+      margin: 0 8px;
+    }
+
+    /* Recording indicator */
+    .recording-indicator {
       display: flex;
       align-items: center;
-      gap: 16px;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+      gap: 6px;
     }
 
-    .timer {
-      font-size: 24px;
-      font-weight: 600;
-      color: #fff;
-      font-variant-numeric: tabular-nums;
-      min-width: 80px;
-    }
-
-    .recording-indicator {
-      width: 12px;
-      height: 12px;
+    .red-dot {
+      width: 8px;
+      height: 8px;
       background: #ef4444;
       border-radius: 50%;
       animation: pulse 1.5s ease-in-out infinite;
     }
 
-    .recording-indicator.paused {
+    .red-dot.paused {
       animation: none;
       background: #f59e0b;
     }
@@ -55,93 +92,337 @@
       50% { opacity: 0.5; transform: scale(0.9); }
     }
 
+    .timer {
+      font-size: 13px;
+      font-weight: 500;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-secondary);
+    }
+
+    /* Buttons - match home bar */
     .btn {
       -webkit-app-region: no-drag;
-      background: rgba(255, 255, 255, 0.1);
-      border: none;
-      border-radius: 10px;
       width: 44px;
       height: 44px;
       display: flex;
       align-items: center;
       justify-content: center;
+      background: transparent;
+      border: none;
+      border-radius: 10px;
+      color: var(--text-secondary);
       cursor: pointer;
-      transition: all 0.2s ease;
-      color: #fff;
+      transition: background 0.1s ease, color 0.1s ease, transform 0.1s ease;
+      will-change: transform;
+    }
+
+    .btn svg {
+      width: 22px;
+      height: 22px;
     }
 
     .btn:hover {
-      background: rgba(255, 255, 255, 0.2);
+      background: var(--hover);
+      color: var(--text);
     }
 
+    .btn:active {
+      transform: scale(0.94);
+    }
+
+    .btn.active {
+      background: rgba(59, 130, 246, 0.3);
+      color: #3b82f6;
+    }
+
+    /* Mark button - orange accent */
+    .btn-mark {
+      background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
+      color: white;
+      position: relative;
+    }
+
+    .btn-mark:hover {
+      background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%);
+    }
+
+    .btn-mark.flash {
+      animation: flash 0.3s ease-out;
+    }
+
+    @keyframes flash {
+      0% { background: #22c55e; transform: scale(1.1); }
+      100% { background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); transform: scale(1); }
+    }
+
+    .mark-count {
+      position: absolute;
+      top: -4px;
+      right: -4px;
+      background: #ef4444;
+      color: white;
+      font-size: 9px;
+      font-weight: 700;
+      min-width: 16px;
+      height: 16px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0 4px;
+    }
+
+    /* Stop button - red */
     .btn-stop {
       background: #ef4444;
-      width: 52px;
-      height: 52px;
-      border-radius: 12px;
+      color: white;
     }
 
     .btn-stop:hover {
       background: #dc2626;
-      transform: scale(1.05);
     }
 
-    .btn-stop svg {
-      width: 20px;
-      height: 20px;
+    /* Cancel button - subtle */
+    .btn-cancel {
+      width: 40px;
+      height: 40px;
+      color: var(--text-tertiary);
     }
 
-    .btn svg {
+    .btn-cancel svg {
       width: 18px;
       height: 18px;
     }
 
-    .divider {
-      width: 1px;
-      height: 32px;
-      background: rgba(255, 255, 255, 0.1);
+    .btn-cancel:hover {
+      color: var(--text-secondary);
     }
 
-    .camera-preview {
-      width: 64px;
-      height: 48px;
+    /* Layout dropdown */
+    .layout-container {
+      position: relative;
+      -webkit-app-region: no-drag;
+    }
+
+    .layout-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 10px;
+      background: transparent;
+      border: none;
+      border-radius: 10px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.12s;
+    }
+
+    .layout-toggle:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .layout-toggle svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    .layout-toggle .chevron {
+      width: 10px;
+      height: 10px;
+      opacity: 0.5;
+      transition: transform 0.15s ease;
+    }
+
+    .layout-toggle.open .chevron {
+      transform: rotate(180deg);
+    }
+
+    .layout-dropdown {
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(30, 30, 35, 0.95);
+      backdrop-filter: blur(20px);
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+      padding: 6px;
+      display: none;
+      flex-direction: column;
+      gap: 2px;
+      min-width: 110px;
+    }
+
+    .layout-dropdown.show {
+      display: flex;
+    }
+
+    .layout-option {
+      background: transparent;
+      border: none;
       border-radius: 8px;
-      overflow: hidden;
-      background: #000;
+      padding: 8px 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      transition: all 0.1s;
+      text-align: left;
     }
 
-    .camera-preview video {
-      width: 100%;
-      height: 100%;
-      object-fit: cover;
-      transform: scaleX(-1);
+    .layout-option:hover {
+      background: var(--hover);
+      color: var(--text);
+    }
+
+    .layout-option.active {
+      background: rgba(255, 255, 255, 0.1);
+      color: var(--text);
+    }
+
+    .layout-option svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    .layout-option span {
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    /* Hints */
+    .hints-bar {
+      display: flex;
+      gap: 12px;
+      padding: 6px 12px;
+      margin-top: 6px;
+      font-size: 10px;
+      color: var(--text-tertiary);
+    }
+
+    .hint kbd {
+      background: rgba(255, 255, 255, 0.1);
+      border-radius: 3px;
+      padding: 1px 4px;
+      font-family: inherit;
+      font-size: 9px;
+      margin-right: 3px;
+    }
+
+    .hint-dismiss {
+      cursor: pointer;
+      opacity: 0.5;
+    }
+
+    .hint-dismiss:hover {
+      opacity: 1;
+    }
+
+    button:focus {
+      outline: none;
     }
   </style>
 </head>
 <body>
-  <div class="controls">
-    <div class="recording-indicator" id="indicator"></div>
-    <div class="timer" id="timer">00:00</div>
+  <div class="app">
+    <div class="control-bar">
+      <div class="recording-indicator">
+        <div class="red-dot" id="indicator"></div>
+        <span class="timer" id="timer">0:00</span>
+      </div>
 
-    <div class="divider"></div>
+      <div class="divider"></div>
 
-    <button class="btn" id="pause-btn" title="Pause (⌘⇧P)">
-      <svg viewBox="0 0 24 24" fill="currentColor">
-        <rect x="6" y="4" width="4" height="16"/>
-        <rect x="14" y="4" width="4" height="16"/>
-      </svg>
-    </button>
+      <!-- Layout dropdown -->
+      <div class="layout-container">
+        <button class="layout-toggle" id="layout-toggle">
+          <svg id="layout-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2"/>
+            <rect x="12" y="9" width="8" height="6" rx="1" fill="currentColor" stroke="none"/>
+          </svg>
+          <span id="layout-label">PIP</span>
+          <svg class="chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="6 9 12 15 18 9"/>
+          </svg>
+        </button>
+        <div class="layout-dropdown" id="layout-dropdown">
+          <button class="layout-option active" data-layout="pip">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2"/>
+              <rect x="12" y="9" width="8" height="6" rx="1" fill="currentColor" stroke="none"/>
+            </svg>
+            <span>PIP</span>
+          </button>
+          <button class="layout-option" data-layout="screen">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2"/>
+            </svg>
+            <span>Screen</span>
+          </button>
+          <button class="layout-option" data-layout="camera">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="10" r="7"/>
+            </svg>
+            <span>Camera</span>
+          </button>
+          <button class="layout-option" data-layout="split">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="2" y="3" width="20" height="14" rx="2"/>
+              <line x1="12" y1="3" x2="12" y2="17"/>
+            </svg>
+            <span>Split</span>
+          </button>
+        </div>
+      </div>
 
-    <button class="btn btn-stop" id="stop-btn" title="Stop Recording (⌘⇧R)">
-      <svg viewBox="0 0 24 24" fill="currentColor">
-        <rect x="6" y="6" width="12" height="12" rx="2"/>
-      </svg>
-    </button>
+      <div class="divider"></div>
 
-    <div class="divider"></div>
+      <button class="btn btn-mark" id="mark-btn" title="Mark for Zoom (M)">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 2v4M12 18v4M2 12h4M18 12h4"/>
+        </svg>
+        <span class="mark-count" id="mark-count" style="display: none;">0</span>
+      </button>
 
-    <div class="camera-preview" id="camera-preview">
-      <video id="camera-video" autoplay muted playsinline></video>
+      <!-- Second camera toggle -->
+      <button class="btn" id="add-camera-btn" title="Add Second Camera">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="9"/>
+          <path d="M12 8v8M8 12h8"/>
+        </svg>
+      </button>
+
+      <button class="btn" id="pause-btn" title="Pause">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <rect x="6" y="4" width="4" height="16" rx="1"/>
+          <rect x="14" y="4" width="4" height="16" rx="1"/>
+        </svg>
+      </button>
+
+      <button class="btn btn-stop" id="stop-btn" title="Stop">
+        <svg viewBox="0 0 24 24" fill="currentColor">
+          <rect x="6" y="6" width="12" height="12" rx="2"/>
+        </svg>
+      </button>
+
+      <button class="btn btn-cancel" id="cancel-btn" title="Discard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+
+    <div class="hints-bar" id="hints-bar">
+      <span class="hint"><kbd>M</kbd> zoom</span>
+      <span class="hint"><kbd>Cmd+Shift+T</kbd> teleprompter</span>
+      <span class="hint"><kbd>Cmd+Shift+B</kbd> blur</span>
+      <span class="hint-dismiss" id="dismiss-hints">x</span>
     </div>
   </div>
 
@@ -150,83 +431,150 @@
     let isPaused = false;
     let pausedTime = 0;
     let pauseStart = null;
+    let markCount = 0;
 
-    // Update timer
+    // Timer
     function updateTimer() {
       if (isPaused) return;
-
       const elapsed = Date.now() - startTime - pausedTime;
       const seconds = Math.floor(elapsed / 1000) % 60;
       const minutes = Math.floor(elapsed / 60000);
-
-      document.getElementById('timer').textContent =
-        `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+      document.getElementById('timer').textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
     }
-
     setInterval(updateTimer, 100);
 
-    // Pause button
+    // Pause
     document.getElementById('pause-btn').addEventListener('click', () => {
       isPaused = !isPaused;
-
       const indicator = document.getElementById('indicator');
       const pauseBtn = document.getElementById('pause-btn');
 
       if (isPaused) {
         indicator.classList.add('paused');
         pauseStart = Date.now();
-        pauseBtn.innerHTML = `
-          <svg viewBox="0 0 24 24" fill="currentColor">
-            <polygon points="5 3 19 12 5 21 5 3"/>
-          </svg>
-        `;
+        pauseBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
       } else {
         indicator.classList.remove('paused');
         pausedTime += Date.now() - pauseStart;
-        pauseBtn.innerHTML = `
-          <svg viewBox="0 0 24 24" fill="currentColor">
-            <rect x="6" y="4" width="4" height="16"/>
-            <rect x="14" y="4" width="4" height="16"/>
-          </svg>
-        `;
+        pauseBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>`;
       }
 
-      // Notify main app
-      window.soron.onTogglePause && window.soron.onTogglePause();
+      if (window.soron?.togglePauseFromControl) {
+        window.soron.togglePauseFromControl();
+      }
     });
 
-    // Stop button
+    // Stop
     document.getElementById('stop-btn').addEventListener('click', () => {
-      window.close();
+      if (window.soron?.stopRecording) {
+        window.soron.stopRecording();
+      } else {
+        window.close();
+      }
     });
 
-    // Start camera preview
-    async function startCameraPreview() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: 128, height: 96, facingMode: 'user' },
-          audio: false
-        });
-
-        document.getElementById('camera-video').srcObject = stream;
-      } catch (err) {
-        console.log('Camera not available:', err);
-        document.getElementById('camera-preview').style.display = 'none';
+    // Cancel
+    document.getElementById('cancel-btn').addEventListener('click', () => {
+      if (confirm('Discard this recording?')) {
+        if (window.soron?.cancelRecording) {
+          window.soron.cancelRecording();
+        } else {
+          window.close();
+        }
       }
-    }
+    });
 
-    startCameraPreview();
+    // Layout dropdown
+    const layoutToggle = document.getElementById('layout-toggle');
+    const layoutDropdown = document.getElementById('layout-dropdown');
+    const layoutIcon = document.getElementById('layout-icon');
+    const layoutLabel = document.getElementById('layout-label');
 
-    // Listen for external commands
-    if (window.soron) {
-      window.soron.onStopRecording(() => {
-        window.close();
+    const icons = {
+      pip: `<rect x="2" y="3" width="20" height="14" rx="2"/><rect x="12" y="9" width="8" height="6" rx="1" fill="currentColor" stroke="none"/>`,
+      screen: `<rect x="2" y="3" width="20" height="14" rx="2"/>`,
+      camera: `<circle cx="12" cy="10" r="7"/>`,
+      split: `<rect x="2" y="3" width="20" height="14" rx="2"/><line x1="12" y1="3" x2="12" y2="17"/>`
+    };
+    const labels = { pip: 'PIP', screen: 'Screen', camera: 'Camera', split: 'Split' };
+
+    layoutToggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      layoutDropdown.classList.toggle('show');
+      layoutToggle.classList.toggle('open');
+    });
+
+    document.addEventListener('click', () => {
+      layoutDropdown.classList.remove('show');
+      layoutToggle.classList.remove('open');
+    });
+
+    document.querySelectorAll('.layout-option').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const layout = btn.dataset.layout;
+        document.querySelectorAll('.layout-option').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        layoutIcon.innerHTML = icons[layout];
+        layoutLabel.textContent = labels[layout];
+        layoutDropdown.classList.remove('show');
+        layoutToggle.classList.remove('open');
+        if (window.soron?.switchLayout) window.soron.switchLayout(layout);
       });
+    });
 
-      window.soron.onTogglePause(() => {
-        document.getElementById('pause-btn').click();
-      });
-    }
+    // Mark
+    const markBtn = document.getElementById('mark-btn');
+    const markCountEl = document.getElementById('mark-count');
+
+    markBtn.addEventListener('click', () => {
+      if (window.soron?.addClickEvent) window.soron.addClickEvent();
+      markCount++;
+      markCountEl.textContent = markCount;
+      markCountEl.style.display = 'flex';
+      markBtn.classList.add('flash');
+      setTimeout(() => markBtn.classList.remove('flash'), 300);
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'm' || e.key === 'M') markBtn.click();
+    });
+
+    // Hints
+    const hintsBar = document.getElementById('hints-bar');
+    if (localStorage.getItem('hideRecordingHints') === 'true') hintsBar.style.display = 'none';
+    document.getElementById('dismiss-hints').addEventListener('click', () => {
+      hintsBar.style.display = 'none';
+      localStorage.setItem('hideRecordingHints', 'true');
+    });
+
+    // Second camera toggle
+    const addCameraBtn = document.getElementById('add-camera-btn');
+    let secondCameraActive = false;
+
+    addCameraBtn.addEventListener('click', async () => {
+      if (window.soron?.toggleSecondCamera) {
+        const result = await window.soron.toggleSecondCamera();
+        secondCameraActive = result.active;
+
+        // Update button appearance
+        if (secondCameraActive) {
+          addCameraBtn.classList.add('active');
+          addCameraBtn.title = 'Remove Second Camera';
+          addCameraBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M8 12h8"/>
+          </svg>`;
+        } else {
+          addCameraBtn.classList.remove('active');
+          addCameraBtn.title = 'Add Second Camera';
+          addCameraBtn.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M12 8v8M8 12h8"/>
+          </svg>`;
+        }
+      }
+    });
   </script>
 </body>
 </html>

@@ -148,25 +148,29 @@ class GoogleVisionClient:
         video_path: Path,
         interval_seconds: float = 1.0,
         max_frames: int = 30,
+        parallel_workers: int = 4,
     ) -> list[FrameAnalysis]:
         """
-        Extract frames from video and analyze each one.
+        Extract frames from video and analyze each one in parallel.
 
         Args:
             video_path: Path to video file
             interval_seconds: Time between extracted frames
             max_frames: Maximum number of frames to analyze
+            parallel_workers: Number of parallel analysis threads (default 4)
 
         Returns:
             List of FrameAnalysis for each extracted frame
         """
+        import concurrent.futures
+
         video_path = Path(video_path)
         analyses = []
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir = Path(tmpdir)
 
-            # Extract frames using FFmpeg
+            # Extract frames using FFmpeg (fast, single pass)
             logger.info(f"Extracting frames from {video_path.name}...")
 
             output_pattern = tmpdir / "frame_%04d.jpg"
@@ -174,18 +178,18 @@ class GoogleVisionClient:
                 "ffmpeg", "-y", "-i", str(video_path),
                 "-vf", f"fps=1/{interval_seconds}",
                 "-frames:v", str(max_frames),
-                "-q:v", "2",  # High quality JPEG
+                "-q:v", "3",  # Slightly lower quality for faster extraction (still good)
+                "-threads", "2",  # Use multiple threads for decoding
                 str(output_pattern)
             ], check=True, capture_output=True)
 
-            # Analyze each frame
+            # Analyze frames in parallel for speed
             frame_files = sorted(tmpdir.glob("frame_*.jpg"))
-            logger.info(f"Analyzing {len(frame_files)} frames...")
+            logger.info(f"Analyzing {len(frame_files)} frames in parallel ({parallel_workers} workers)...")
 
-            for i, frame_path in enumerate(frame_files):
+            def analyze_single_frame(args):
+                i, frame_path = args
                 frame_time = i * interval_seconds
-                logger.debug(f"Analyzing frame at {frame_time}s...")
-
                 try:
                     analysis = self.analyze_image(frame_path)
                     analysis.frame_time = frame_time
@@ -198,9 +202,23 @@ class GoogleVisionClient:
                     for logo in analysis.logos:
                         logo.frame_time = frame_time
 
-                    analyses.append(analysis)
+                    return (i, analysis)
                 except Exception as e:
                     logger.warning(f"Failed to analyze frame at {frame_time}s: {e}")
+                    return (i, None)
+
+            # Run analysis in parallel
+            with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_workers) as executor:
+                results = list(executor.map(
+                    analyze_single_frame,
+                    enumerate(frame_files)
+                ))
+
+            # Sort by frame index and filter out failures
+            results.sort(key=lambda x: x[0])
+            analyses = [r[1] for r in results if r[1] is not None]
+
+            logger.info(f"Successfully analyzed {len(analyses)}/{len(frame_files)} frames")
 
         return analyses
 

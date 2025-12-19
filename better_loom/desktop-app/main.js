@@ -19,9 +19,9 @@ function createMainWindow() {
   const display = screen.getPrimaryDisplay();
   const { width: screenWidth, height: screenHeight } = display.workAreaSize;
 
-  // Floating bar dimensions (extra height for tooltips)
-  const barWidth = 440;
-  const barHeight = 90; // Extra space above for tooltips
+  // Floating bar dimensions (extra height for features popup)
+  const barWidth = 480;
+  const barHeight = 320; // Extra space above for features popup
 
   mainWindow = new BrowserWindow({
     width: barWidth,
@@ -48,6 +48,8 @@ function createMainWindow() {
 
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
+    // Mouse event forwarding is handled dynamically in renderer
+    // based on whether cursor is over the bar or transparent area
   });
 
   mainWindow.on('closed', () => {
@@ -55,11 +57,41 @@ function createMainWindow() {
   });
 }
 
+// IPC handlers for mouse event forwarding
+ipcMain.on('set-ignore-mouse-events', (event, ignore, options) => {
+  const win = BrowserWindow.fromWebContents(event.sender);
+  if (win) {
+    win.setIgnoreMouseEvents(ignore, options || {});
+  }
+});
+
 // Recents popup window
 let recentsWindow = null;
+let recentsBlurTimeout = null;
+
+function setupRecentsBlurHandler() {
+  recentsWindow.on('blur', () => {
+    // Debounce: give toggle handler time to run first
+    if (recentsBlurTimeout) clearTimeout(recentsBlurTimeout);
+    recentsBlurTimeout = setTimeout(() => {
+      // Don't close if main window is focused (user clicked toggle button)
+      if (mainWindow && mainWindow.isFocused()) {
+        return;
+      }
+      if (recentsWindow && !recentsWindow.isDestroyed()) {
+        recentsWindow.hide();
+        if (mainWindow) mainWindow.webContents.send('recents-closed');
+        recentsWindow = null;
+        isRecentsOpen = false;
+        setTimeout(() => prewarmWindows(), 100);
+      }
+    }, 100);
+  });
+}
 
 function createRecentsWindow() {
-  if (recentsWindow) {
+  if (recentsWindow && !recentsWindow.isDestroyed()) {
+    recentsWindow.show();
     recentsWindow.focus();
     return;
   }
@@ -67,24 +99,11 @@ function createRecentsWindow() {
   // PERF: Use pre-warmed window if available (instant show)
   if (prewarmedRecents && !prewarmedRecents.isDestroyed()) {
     recentsWindow = prewarmedRecents;
-    prewarmedRecents = null; // Consume it
+    prewarmedRecents = null;
     recentsWindow.show();
     recentsWindow.focus();
-
-    // Set up close handler
-    recentsWindow.on('blur', () => {
-      if (recentsWindow && !recentsWindow.isDestroyed()) {
-        recentsWindow.hide();
-        if (mainWindow) mainWindow.webContents.send('recents-closed');
-        recentsWindow = null;
-        // Re-warm for next use
-        setTimeout(() => prewarmWindows(), 100);
-      }
-    });
-
-    recentsWindow.on('closed', () => {
-      recentsWindow = null;
-    });
+    setupRecentsBlurHandler();
+    recentsWindow.on('closed', () => { recentsWindow = null; });
     return;
   }
 
@@ -99,7 +118,7 @@ function createRecentsWindow() {
     width: recentsWidth,
     height: recentsHeight,
     x: Math.floor(screenWidth / 2 - recentsWidth / 2),
-    y: screenHeight - recentsHeight - 100,
+    y: screenHeight - recentsHeight - 360,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -115,36 +134,54 @@ function createRecentsWindow() {
   });
 
   recentsWindow.loadFile('renderer/recents.html');
-
-  recentsWindow.once('ready-to-show', () => {
-    recentsWindow.show();
-  });
-
+  recentsWindow.once('ready-to-show', () => { recentsWindow.show(); });
   recentsWindow.on('closed', () => {
     recentsWindow = null;
-    // Tell main window recents is closed
-    if (mainWindow) {
-      mainWindow.webContents.send('recents-closed');
-    }
+    isRecentsOpen = false;
+    if (mainWindow) mainWindow.webContents.send('recents-closed');
   });
-
-  // Close when clicking outside
-  recentsWindow.on('blur', () => {
-    if (recentsWindow && !recentsWindow.isDestroyed()) {
-      recentsWindow.close();
-    }
-  });
+  setupRecentsBlurHandler();
 }
 
 function closeRecentsWindow() {
+  if (recentsBlurTimeout) {
+    clearTimeout(recentsBlurTimeout);
+    recentsBlurTimeout = null;
+  }
   if (recentsWindow && !recentsWindow.isDestroyed()) {
     recentsWindow.close();
     recentsWindow = null;
   }
+  isRecentsOpen = false;
 }
 
 // Settings popup window
 let settingsWindow = null;
+let isSettingsOpen = false;
+let settingsBlurTimeout = null;
+
+function setupSettingsBlurHandler() {
+  settingsWindow.on('blur', () => {
+    // Debounce: give toggle handler time to run first
+    if (settingsBlurTimeout) clearTimeout(settingsBlurTimeout);
+    settingsBlurTimeout = setTimeout(() => {
+      // Don't close if main window is focused (user clicked toggle button)
+      if (mainWindow && mainWindow.isFocused()) {
+        return;
+      }
+      if (settingsWindow && !settingsWindow.isDestroyed()) {
+        settingsWindow.hide();
+        if (mainWindow) mainWindow.webContents.send('settings-closed');
+        settingsWindow = null;
+        isSettingsOpen = false;
+        setTimeout(() => prewarmWindows(), 100);
+      }
+    }, 100);
+  });
+}
+
+// Recents tracking
+let isRecentsOpen = false;
 
 // Teleprompter window
 let teleprompterWindow = null;
@@ -266,7 +303,8 @@ function closeBlurOverlayWindow() {
 }
 
 function createSettingsWindow() {
-  if (settingsWindow) {
+  if (settingsWindow && !settingsWindow.isDestroyed()) {
+    settingsWindow.show();
     settingsWindow.focus();
     return;
   }
@@ -274,24 +312,11 @@ function createSettingsWindow() {
   // PERF: Use pre-warmed window if available (instant show)
   if (prewarmedSettings && !prewarmedSettings.isDestroyed()) {
     settingsWindow = prewarmedSettings;
-    prewarmedSettings = null; // Consume it
+    prewarmedSettings = null;
     settingsWindow.show();
     settingsWindow.focus();
-
-    // Set up close handler
-    settingsWindow.on('blur', () => {
-      if (settingsWindow && !settingsWindow.isDestroyed()) {
-        settingsWindow.hide();
-        if (mainWindow) mainWindow.webContents.send('settings-closed');
-        settingsWindow = null;
-        // Re-warm for next use
-        setTimeout(() => prewarmWindows(), 100);
-      }
-    });
-
-    settingsWindow.on('closed', () => {
-      settingsWindow = null;
-    });
+    setupSettingsBlurHandler();
+    settingsWindow.on('closed', () => { settingsWindow = null; });
     return;
   }
 
@@ -306,7 +331,7 @@ function createSettingsWindow() {
     width: settingsWidth,
     height: settingsHeight,
     x: Math.floor(screenWidth / 2 - settingsWidth / 2),
-    y: screenHeight - settingsHeight - 120,
+    y: screenHeight - settingsHeight - 360,
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -322,37 +347,32 @@ function createSettingsWindow() {
   });
 
   settingsWindow.loadFile('renderer/settings.html');
-
-  settingsWindow.once('ready-to-show', () => {
-    settingsWindow.show();
-  });
-
+  settingsWindow.once('ready-to-show', () => { settingsWindow.show(); });
   settingsWindow.on('closed', () => {
     settingsWindow = null;
-    if (mainWindow) {
-      mainWindow.webContents.send('settings-closed');
-    }
+    isSettingsOpen = false;
+    if (mainWindow) mainWindow.webContents.send('settings-closed');
   });
-
-  settingsWindow.on('blur', () => {
-    if (settingsWindow && !settingsWindow.isDestroyed()) {
-      settingsWindow.close();
-    }
-  });
+  setupSettingsBlurHandler();
 }
 
 function closeSettingsWindow() {
+  if (settingsBlurTimeout) {
+    clearTimeout(settingsBlurTimeout);
+    settingsBlurTimeout = null;
+  }
   if (settingsWindow && !settingsWindow.isDestroyed()) {
     settingsWindow.close();
     settingsWindow = null;
   }
+  isSettingsOpen = false;
 }
 
 function createRecordingWindow(sourceId = null) {
   // Loom-style floating recording control window
   recordingWindow = new BrowserWindow({
-    width: 280,
-    height: 160,
+    width: 480,
+    height: 280,  // Extra height for dropdown popup + hints
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -372,7 +392,10 @@ function createRecordingWindow(sourceId = null) {
   const { screen } = require('electron');
   const display = screen.getPrimaryDisplay();
   const { width, height } = display.workAreaSize;
-  recordingWindow.setPosition(Math.floor(width / 2 - 140), height - 180);
+  recordingWindow.setPosition(Math.floor(width / 2 - 240), height - 300);
+
+  // Exclude from screen capture
+  recordingWindow.setContentProtection(true);
 
   // Make window draggable but pass through clicks on transparent areas
   recordingWindow.setIgnoreMouseEvents(false);
@@ -488,10 +511,10 @@ function createRecordingControlWindow() {
   const { width, height } = display.workAreaSize;
 
   recordingControlWindow = new BrowserWindow({
-    width: 300,
-    height: 70,
-    x: Math.floor(width / 2 - 150),
-    y: height - 100,
+    width: 480,
+    height: 280,
+    x: Math.floor(width / 2 - 240),
+    y: height - 300,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -508,6 +531,9 @@ function createRecordingControlWindow() {
   // Load the recording control UI
   recordingControlWindow.loadFile('renderer/recording-control.html');
 
+  // Exclude from screen capture
+  recordingControlWindow.setContentProtection(true);
+
   recordingControlWindow.on('closed', () => {
     recordingControlWindow = null;
   });
@@ -520,15 +546,18 @@ function closeRecordingControlWindow() {
   }
 }
 
-// Camera bubble window (Loom-style floating camera preview)
+// Camera bubble windows (support for two cameras - built-in + iPhone)
 let cameraBubbleWindow = null;
+let cameraBubbleWindow2 = null;
+let currentCaptureMode = 'fullscreen';
 
-function createCameraBubbleWindow() {
-  console.log('[MAIN] createCameraBubbleWindow called');
+function createCameraBubbleWindow(deviceId = null, position = 'primary') {
+  console.log('[MAIN] createCameraBubbleWindow called, position:', position);
 
-  if (cameraBubbleWindow) {
+  const targetWindow = position === 'secondary' ? cameraBubbleWindow2 : cameraBubbleWindow;
+  if (targetWindow) {
     console.log('[MAIN] Camera bubble already exists, showing it');
-    cameraBubbleWindow.show();
+    targetWindow.show();
     return;
   }
 
@@ -536,24 +565,35 @@ function createCameraBubbleWindow() {
   const display = screen.getPrimaryDisplay();
   const { width, height } = display.workAreaSize;
 
-  // Larger bubble (400px) for better face detection during lip-sync
-  const bubbleSize = 400;
+  // Different sizes and positions for primary vs secondary
+  const bubbleSize = position === 'secondary' ? 300 : 400;
   const padding = 30;
-  console.log(`[MAIN] Creating camera bubble at position (${padding}, ${height - bubbleSize - padding}), size ${bubbleSize}x${bubbleSize}`);
 
-  // Position in bottom-left corner - this will be captured in screen recording
-  cameraBubbleWindow = new BrowserWindow({
+  let x, y;
+  if (position === 'secondary') {
+    // Secondary camera: bottom-right
+    x = width - bubbleSize - padding;
+    y = height - bubbleSize - padding;
+  } else {
+    // Primary camera: bottom-left
+    x = padding;
+    y = height - bubbleSize - padding;
+  }
+
+  console.log(`[MAIN] Creating camera bubble at position (${x}, ${y}), size ${bubbleSize}x${bubbleSize}`);
+
+  const bubbleWindow = new BrowserWindow({
     width: bubbleSize,
     height: bubbleSize,
-    x: padding,
-    y: height - bubbleSize - padding,
+    x: x,
+    y: y,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
     resizable: false,
     movable: true,
     skipTaskbar: true,
-    hasShadow: false, // We handle shadow in CSS
+    hasShadow: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
@@ -561,12 +601,35 @@ function createCameraBubbleWindow() {
     },
   });
 
-  // Load the camera bubble UI
-  cameraBubbleWindow.loadFile('renderer/camera-bubble.html');
+  // Pass deviceId and secondary flag to camera-bubble.html via query string
+  const params = new URLSearchParams();
+  if (deviceId) params.set('deviceId', deviceId);
+  if (position === 'secondary') params.set('secondary', 'true');
+  bubbleWindow.loadFile('renderer/camera-bubble.html', { search: params.toString() });
 
-  cameraBubbleWindow.on('closed', () => {
-    cameraBubbleWindow = null;
+  // Full screen mode: DON'T exclude from capture (bubbles ARE the overlay)
+  // Window mode: Exclude from capture (canvas compositing handles overlay)
+  // Note: setContentProtection may not work reliably on all macOS versions
+  if (currentCaptureMode === 'window') {
+    console.log('[MAIN] Window mode: Setting content protection on bubble');
+    bubbleWindow.setContentProtection(true);
+  } else {
+    console.log('[MAIN] Fullscreen mode: Bubble will be captured in recording');
+  }
+
+  bubbleWindow.on('closed', () => {
+    if (position === 'secondary') {
+      cameraBubbleWindow2 = null;
+    } else {
+      cameraBubbleWindow = null;
+    }
   });
+
+  if (position === 'secondary') {
+    cameraBubbleWindow2 = bubbleWindow;
+  } else {
+    cameraBubbleWindow = bubbleWindow;
+  }
 }
 
 function closeCameraBubbleWindow() {
@@ -574,6 +637,18 @@ function closeCameraBubbleWindow() {
     cameraBubbleWindow.close();
     cameraBubbleWindow = null;
   }
+}
+
+function closeCameraBubbleWindow2() {
+  if (cameraBubbleWindow2) {
+    cameraBubbleWindow2.close();
+    cameraBubbleWindow2 = null;
+  }
+}
+
+function closeAllCameraBubbles() {
+  closeCameraBubbleWindow();
+  closeCameraBubbleWindow2();
 }
 
 function createTray() {
@@ -779,6 +854,62 @@ ipcMain.handle('add-click-event', async (event, clickData) => {
   }
 });
 
+// Source picker window
+let sourcePickerWindow = null;
+let sourcePickerResolve = null;
+
+ipcMain.handle('show-source-picker', async (event, options) => {
+  return new Promise((resolve) => {
+    sourcePickerResolve = resolve;
+
+    const { screen } = require('electron');
+    const display = screen.getPrimaryDisplay();
+    const { width, height } = display.workAreaSize;
+
+    sourcePickerWindow = new BrowserWindow({
+      width: 500,
+      height: 600,
+      x: Math.floor(width / 2 - 250),
+      y: Math.floor(height / 2 - 300),
+      frame: false,
+      transparent: true,
+      alwaysOnTop: true,
+      resizable: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, 'preload.js'),
+      },
+    });
+
+    sourcePickerWindow.loadFile('renderer/source-picker.html');
+
+    // Pass options to picker window
+    sourcePickerWindow.webContents.once('did-finish-load', () => {
+      sourcePickerWindow.webContents.send('picker-options', options);
+    });
+
+    sourcePickerWindow.on('closed', () => {
+      sourcePickerWindow = null;
+      if (sourcePickerResolve) {
+        sourcePickerResolve({ cancelled: true });
+        sourcePickerResolve = null;
+      }
+    });
+  });
+});
+
+ipcMain.handle('source-picker-select', (event, result) => {
+  if (sourcePickerResolve) {
+    sourcePickerResolve(result);
+    sourcePickerResolve = null;
+  }
+  if (sourcePickerWindow) {
+    sourcePickerWindow.close();
+    sourcePickerWindow = null;
+  }
+});
+
 ipcMain.handle('get-recordings', async () => {
   const videosDir = path.join(app.getPath('videos'), 'Soron');
 
@@ -824,9 +955,10 @@ ipcMain.handle('show-save-dialog', async () => {
   return result;
 });
 
-ipcMain.handle('recording-started', (event, sourceId, includeCamera = false) => {
-  console.log(`[MAIN] recording-started IPC: sourceId=${sourceId}, includeCamera=${includeCamera}`);
+ipcMain.handle('recording-started', (event, sourceId, includeCamera = false, captureMode = 'fullscreen') => {
+  console.log(`[MAIN] recording-started IPC: sourceId=${sourceId}, includeCamera=${includeCamera}, mode=${captureMode}`);
   isRecording = true;
+  currentCaptureMode = captureMode; // Store for bubble creation
 
   // Hide main window
   mainWindow?.hide();
@@ -839,26 +971,46 @@ ipcMain.handle('recording-started', (event, sourceId, includeCamera = false) => 
   // Create and show recording control window
   createRecordingControlWindow();
 
-  // SIMPLIFIED APPROACH: Camera bubble window IS captured in screen recording
-  // This gives us a single video with camera already composited = no sync issues
-  // The bubble is 300px for better face detection during lip-sync
+  // Show camera bubble in BOTH modes so user can see themselves
+  // Full screen mode: Bubble captured in recording (no setContentProtection)
+  // Window mode: Bubble is preview only (setContentProtection), compositing adds camera to recording
   if (includeCamera) {
-    console.log('[MAIN] Creating camera bubble window (will be captured in screen recording)');
+    console.log(`[MAIN] Creating camera bubble window (mode=${captureMode})`);
     createCameraBubbleWindow();
   }
 });
+
 
 ipcMain.handle('recording-stopped', () => {
   isRecording = false;
   hideRecordingHighlight();
   closeRecordingControlWindow();
-  closeCameraBubbleWindow();
+  closeAllCameraBubbles(); // Close both primary and secondary cameras
   recordingWindow?.close();
   mainWindow?.show();
 });
 
 ipcMain.handle('hide-main-window', () => {
   mainWindow?.hide();
+});
+
+// Add/remove second camera during recording
+ipcMain.handle('toggle-second-camera', async (event, deviceId = null) => {
+  if (cameraBubbleWindow2 && !cameraBubbleWindow2.isDestroyed()) {
+    // Close second camera
+    closeCameraBubbleWindow2();
+    return { active: false };
+  } else {
+    // Add second camera
+    createCameraBubbleWindow(deviceId, 'secondary');
+    return { active: true };
+  }
+});
+
+// Get available camera devices
+ipcMain.handle('get-camera-devices', async () => {
+  // This needs to be done in renderer, return instruction
+  return { useRenderer: true };
 });
 
 ipcMain.handle('show-recording-highlight', (event, sourceId) => {
@@ -903,12 +1055,59 @@ ipcMain.handle('toggle-pause-from-control', () => {
   });
 });
 
+// Layout configurations for bubble positioning (fullscreen mode)
+// Primary camera positions
+const BUBBLE_LAYOUTS = {
+  'pip': { x: 0.02, y: 0.72, w: 0.26, h: 0.26, visible: true },      // Bottom-left small
+  'screen': { visible: false },                                        // No camera
+  'camera': { x: 0, y: 0, w: 1, h: 1, visible: true },                // Full screen
+  'split': { x: 0.5, y: 0, w: 0.5, h: 1, visible: true }              // Right half
+};
+
+// Secondary camera positions (when primary is in certain positions)
+const BUBBLE2_LAYOUTS = {
+  'pip': { x: 0.72, y: 0.72, w: 0.26, h: 0.26, visible: true },      // Bottom-right small
+  'screen': { visible: false },                                        // No camera
+  'camera': { visible: false },                                        // Primary takes full
+  'split': { visible: false }                                          // Split is primary only
+};
+
+// Helper to reposition a bubble window
+function repositionBubble(bubbleWindow, layout, isPrimary) {
+  if (!bubbleWindow || bubbleWindow.isDestroyed()) return;
+
+  const layoutConfig = isPrimary ? BUBBLE_LAYOUTS[layout] : BUBBLE2_LAYOUTS[layout];
+  if (!layoutConfig) return;
+
+  if (!layoutConfig.visible) {
+    bubbleWindow.hide();
+  } else {
+    const { width, height } = require('electron').screen.getPrimaryDisplay().workAreaSize;
+    const padding = 30;
+
+    const bubbleW = Math.floor(layoutConfig.w * (width - padding * 2));
+    const bubbleH = Math.floor(layoutConfig.h * (height - padding * 2));
+    const bubbleX = Math.floor(layoutConfig.x * (width - padding * 2) + padding);
+    const bubbleY = Math.floor(layoutConfig.y * (height - padding * 2) + padding);
+
+    bubbleWindow.setSize(bubbleW, bubbleH);
+    bubbleWindow.setPosition(bubbleX, bubbleY);
+    bubbleWindow.show();
+  }
+}
+
 // Layout switching during recording
 ipcMain.handle('switch-layout', (event, layout) => {
-  // Forward layout change to main window
+  console.log('[MAIN] switch-layout:', layout);
+
+  // Forward layout change to main window (for window mode canvas compositing)
   if (mainWindow) {
     mainWindow.webContents.send('layout-change', layout);
   }
+
+  // Reposition bubble windows for fullscreen mode
+  repositionBubble(cameraBubbleWindow, layout, true);
+  repositionBubble(cameraBubbleWindow2, layout, false);
 });
 
 ipcMain.handle('get-store', (event, key) => {
@@ -920,10 +1119,12 @@ ipcMain.handle('set-store', (event, key, value) => {
 });
 
 ipcMain.handle('toggle-recents', () => {
-  if (recentsWindow && !recentsWindow.isDestroyed()) {
+  if (isRecentsOpen) {
     closeRecentsWindow();
+    isRecentsOpen = false;
   } else {
     createRecentsWindow();
+    isRecentsOpen = true;
   }
 });
 
@@ -932,10 +1133,12 @@ ipcMain.handle('close-recents', () => {
 });
 
 ipcMain.handle('toggle-settings', () => {
-  if (settingsWindow && !settingsWindow.isDestroyed()) {
+  if (isSettingsOpen) {
     closeSettingsWindow();
+    isSettingsOpen = false;
   } else {
     createSettingsWindow();
+    isSettingsOpen = true;
   }
 });
 

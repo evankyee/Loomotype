@@ -5,8 +5,9 @@ This is the production-ready lip-sync solution.
 Sync Labs handles all the complexity of face detection,
 lip animation, and video rendering.
 
-Pricing: ~$0.05/second of video
-Quality: Up to 4K, production-grade
+Pricing:
+- lipsync-2: ~$0.05/second (faster, good quality)
+- lipsync-2-pro: ~$0.08/second (slower, best quality, up to 4K)
 """
 
 import os
@@ -16,7 +17,7 @@ import tempfile
 import concurrent.futures
 from pathlib import Path
 from loguru import logger
-from typing import Optional
+from typing import Optional, Literal
 from dataclasses import dataclass
 from enum import Enum
 
@@ -31,6 +32,31 @@ class JobStatus(str, Enum):
     PROCESSING = "PROCESSING"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
+
+
+# Quality presets for different use cases
+QUALITY_PRESETS = {
+    "preview": {
+        "model": "lipsync-2",        # Faster, cheaper
+        "poll_interval": 3,          # Check more frequently
+        "description": "Fast preview - good for testing edits",
+    },
+    "balanced": {
+        "model": "lipsync-2",        # Good quality, reasonable speed
+        "poll_interval": 5,
+        "description": "Balanced - good quality at reasonable speed",
+    },
+    "final": {
+        "model": "lipsync-2-pro",    # Best quality
+        "poll_interval": 5,
+        "description": "Final render - highest quality for production",
+    },
+}
+
+
+def get_lipsync_preset(quality: Literal["preview", "balanced", "final"] = "balanced") -> dict:
+    """Get lip-sync settings for a quality preset."""
+    return QUALITY_PRESETS.get(quality, QUALITY_PRESETS["balanced"])
 
 
 @dataclass
@@ -117,9 +143,10 @@ class SyncLabsClient:
         video_path: Path,
         audio_path: Path,
         output_path: Optional[Path] = None,
-        model: str = "lipsync-2-pro",
+        model: Optional[str] = None,
+        quality: Literal["preview", "balanced", "final"] = "final",
         max_wait_seconds: int = 600,
-        poll_interval: int = 5,
+        poll_interval: Optional[int] = None,
         upload_to_gcs: bool = True,
     ) -> Path:
         """
@@ -135,14 +162,20 @@ class SyncLabsClient:
             video_path: Path to video segment
             audio_path: Path to new audio (should match video duration)
             output_path: Where to save result (optional)
-            model: "lipsync-2-pro" (better quality) or "lipsync-2" (faster)
+            model: Override model selection (or use quality preset)
+            quality: "preview" (fast), "balanced", or "final" (best quality)
             max_wait_seconds: Maximum time to wait for completion
-            poll_interval: Seconds between status checks
+            poll_interval: Seconds between status checks (uses preset default)
             upload_to_gcs: If True, upload to GCS for public URLs
 
         Returns:
             Path to lip-synced video
         """
+        # Get settings from quality preset
+        preset = get_lipsync_preset(quality)
+        model = model or preset["model"]
+        poll_interval = poll_interval or preset["poll_interval"]
+        logger.info(f"Lip-sync quality: {quality} (model: {model})")
         video_path = Path(video_path)
         audio_path = Path(audio_path)
 

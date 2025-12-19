@@ -258,6 +258,29 @@ class JobStatus(BaseModel):
     error: Optional[str] = None
 
 
+class BubbleVisibility(BaseModel):
+    """Time range for bubble visibility."""
+    start: float  # seconds
+    end: float    # seconds
+    visible: bool = True
+
+
+class BubbleSettings(BaseModel):
+    """Settings for camera bubble overlay compositing."""
+    position: str = "bottom-left"  # bottom-left, bottom-right, top-left, top-right, custom
+    custom_x: Optional[float] = None  # 0-1 normalized (for custom position)
+    custom_y: Optional[float] = None  # 0-1 normalized (for custom position)
+    size: float = 0.25  # 0-1 as fraction of screen width
+    shape: str = "circle"  # circle, square, rounded
+    visibility: list[BubbleVisibility] = []  # Time-based visibility (empty = always visible)
+
+
+class BubbleCompositeRequest(BaseModel):
+    """Request to composite camera bubble onto video."""
+    bubble_settings: BubbleSettings
+    preview: bool = False  # If true, return lower quality for preview
+
+
 # ============================================================================
 # VIDEO UPLOAD & INFO
 # ============================================================================
@@ -269,9 +292,11 @@ async def health():
 
 @app.post("/api/videos/upload")
 async def upload_video(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     camera_file: Optional[UploadFile] = File(None),
     has_embedded_bubble: bool = Form(False),  # True if camera bubble is IN the screen recording
+    auto_process: bool = Form(True),  # Auto-run transcription + analysis in background
 ):
     """
     Upload a video for editing.
@@ -281,6 +306,9 @@ async def upload_video(
     2. Embedded bubble (has_embedded_bubble=True): Camera bubble is visible in screen recording
        - Simpler, no sync issues
        - Bubble will be cropped for lip-sync
+
+    If auto_process=True (default), automatically runs transcription and vision
+    analysis in the background so they're ready when the user opens the editor.
     """
     video_id = str(uuid.uuid4())[:12]
 
@@ -367,6 +395,11 @@ async def upload_video(
     camera_mode = "separate file" if camera_path else ("embedded bubble" if has_embedded_bubble else "none")
     logger.info(f"Video uploaded: {video_id} ({info.duration:.1f}s), camera: {camera_mode}")
 
+    # Auto-process: run transcription and analysis in background (parallel)
+    if auto_process:
+        background_tasks.add_task(auto_process_video, video_id)
+        logger.info(f"Auto-processing started for {video_id} (transcription + analysis)")
+
     return {
         "video_id": video_id,
         "duration": info.duration,
@@ -376,7 +409,164 @@ async def upload_video(
         "has_camera": camera_path is not None,
         "has_embedded_bubble": has_embedded_bubble,
         "has_preview": preview_path is not None,
+        "processing": auto_process,  # Indicates background processing started
     }
+
+
+async def auto_process_video(video_id: str):
+    """
+    Background task: Run transcription and vision analysis in parallel.
+    Results are cached in videos_store for instant retrieval.
+    """
+    import asyncio
+    import concurrent.futures
+
+    if video_id not in videos_store:
+        logger.error(f"Auto-process: Video {video_id} not found")
+        return
+
+    video = videos_store[video_id]
+    video_path = Path(video["path"])
+
+    logger.info(f"Auto-process starting for {video_id}")
+
+    # Run transcription and analysis in parallel using thread pool
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        # Submit both tasks
+        transcribe_future = loop.run_in_executor(
+            executor, _run_transcription_for_cache, video_id, video_path
+        )
+        analyze_future = loop.run_in_executor(
+            executor, _run_analysis_for_cache, video_id, video_path
+        )
+
+        # Wait for both to complete
+        try:
+            await asyncio.gather(transcribe_future, analyze_future)
+            logger.info(f"Auto-process completed for {video_id}")
+        except Exception as e:
+            logger.error(f"Auto-process error for {video_id}: {e}")
+
+
+def _run_transcription_for_cache(video_id: str, video_path: Path):
+    """Run transcription and cache result."""
+    try:
+        from ..transcription import GoogleSpeechClient
+
+        logger.info(f"[{video_id}] Starting transcription...")
+        client = GoogleSpeechClient()
+        transcript = client.transcribe_video(video_path)
+
+        # Convert to response format and cache
+        segments = []
+        for i, seg in enumerate(transcript.segments):
+            words = []
+            for j, word in enumerate(seg.words):
+                words.append({
+                    "id": f"w-{i}-{j}",
+                    "text": word.text,
+                    "start_time": word.start_time,
+                    "end_time": word.end_time,
+                    "confidence": getattr(word, 'confidence', 1.0),
+                })
+            segments.append({
+                "text": seg.text,
+                "start_time": seg.start_time,
+                "end_time": seg.end_time,
+                "words": words,
+            })
+
+        # Cache in videos_store
+        video = videos_store[video_id]
+        video["transcript"] = {
+            "segments": segments,
+            "duration": transcript.duration,
+            "language": transcript.language,
+        }
+        videos_store[video_id] = video
+        logger.info(f"[{video_id}] Transcription cached ({len(segments)} segments)")
+
+    except Exception as e:
+        logger.error(f"[{video_id}] Transcription failed: {e}")
+
+
+def _run_analysis_for_cache(video_id: str, video_path: Path):
+    """Run vision analysis and cache result."""
+    try:
+        from ..vision import GoogleVisionClient
+
+        logger.info(f"[{video_id}] Starting vision analysis...")
+        client = GoogleVisionClient()
+        # Use 2-second intervals for faster processing
+        frames = client.analyze_video_frames(video_path, interval_seconds=2.0)
+
+        # Convert to response format
+        frame_data = []
+        unique_objects = set()
+        unique_texts = set()
+
+        for frame in frames:
+            objects = []
+            for obj in frame.objects:
+                objects.append({
+                    "id": f"obj-{len(frame_data)}-{len(objects)}",
+                    "name": obj.name,
+                    "confidence": obj.confidence,
+                    "x": obj.bounding_box.x,
+                    "y": obj.bounding_box.y,
+                    "width": obj.bounding_box.width,
+                    "height": obj.bounding_box.height,
+                    "timestamp": frame.timestamp,
+                })
+                unique_objects.add(obj.name)
+
+            texts = []
+            for txt in frame.texts:
+                texts.append({
+                    "id": f"txt-{len(frame_data)}-{len(texts)}",
+                    "text": txt.text,
+                    "confidence": txt.confidence,
+                    "x": txt.bounding_box.x,
+                    "y": txt.bounding_box.y,
+                    "width": txt.bounding_box.width,
+                    "height": txt.bounding_box.height,
+                    "timestamp": frame.timestamp,
+                })
+                unique_texts.add(txt.text)
+
+            logos = []
+            for logo in frame.logos:
+                logos.append({
+                    "id": f"logo-{len(frame_data)}-{len(logos)}",
+                    "name": logo.text if hasattr(logo, 'text') else logo.name,
+                    "confidence": logo.confidence,
+                    "x": logo.bounding_box.x,
+                    "y": logo.bounding_box.y,
+                    "width": logo.bounding_box.width,
+                    "height": logo.bounding_box.height,
+                    "timestamp": frame.timestamp,
+                })
+
+            frame_data.append({
+                "timestamp": frame.timestamp,
+                "objects": objects,
+                "texts": texts,
+                "logos": logos,
+            })
+
+        # Cache in videos_store
+        video = videos_store[video_id]
+        video["analysis"] = {
+            "frames": frame_data,
+            "unique_objects": list(unique_objects),
+            "unique_texts": list(unique_texts),
+        }
+        videos_store[video_id] = video
+        logger.info(f"[{video_id}] Analysis cached ({len(frame_data)} frames)")
+
+    except Exception as e:
+        logger.error(f"[{video_id}] Analysis failed: {e}")
 
 
 @app.get("/api/videos/{video_id}")
@@ -1077,6 +1267,155 @@ async def render_personalized_video(
     )
 
     return {"job_id": job_id, "status": "pending", "progress": 0}
+
+
+@app.post("/api/videos/{video_id}/composite-bubble")
+async def composite_bubble(
+    video_id: str,
+    request: BubbleCompositeRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Composite camera bubble onto video with custom settings.
+
+    Requires a video that was uploaded with a separate camera file.
+    Allows adjusting position, size, shape, and time-based visibility.
+    """
+    if video_id not in videos_store:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video = videos_store[video_id]
+
+    if not video.get("camera_path"):
+        raise HTTPException(
+            status_code=400,
+            detail="No separate camera file for this video. Bubble compositing only works with videos recorded in window mode."
+        )
+
+    video_path = Path(video["path"])
+    camera_path = Path(video["camera_path"])
+
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+    if not camera_path.exists():
+        raise HTTPException(status_code=404, detail="Camera file not found")
+
+    # Create job
+    job_id = str(uuid.uuid4())[:8]
+    quality = "preview" if request.preview else "final"
+    output_filename = f"composite_{job_id}_{quality}.mp4"
+    output_path = OUTPUT_DIR / output_filename
+
+    jobs_store[job_id] = {
+        "job_id": job_id,
+        "video_id": video_id,
+        "status": "pending",
+        "progress": 0,
+        "output_url": None,
+        "error": None,
+        "created_at": datetime.now().isoformat(),
+    }
+
+    # Start background compositing
+    background_tasks.add_task(
+        process_bubble_composite,
+        job_id,
+        video_path,
+        camera_path,
+        output_path,
+        request.bubble_settings,
+        request.preview,
+    )
+
+    return {"job_id": job_id, "status": "pending", "progress": 0}
+
+
+async def process_bubble_composite(
+    job_id: str,
+    video_path: Path,
+    camera_path: Path,
+    output_path: Path,
+    settings: BubbleSettings,
+    preview: bool,
+):
+    """Background task to composite camera bubble onto video."""
+    try:
+        from ..core.ffmpeg_utils import FFmpegProcessor
+
+        jobs_store[job_id]["status"] = "processing"
+        jobs_store[job_id]["progress"] = 10
+
+        # Get video info for calculating positions
+        info = get_video_info(video_path)
+        width, height = info.width, info.height
+
+        # Calculate bubble size in pixels
+        bubble_size = int(width * settings.size)
+        padding = 30
+
+        # Calculate position
+        if settings.position == "custom" and settings.custom_x is not None and settings.custom_y is not None:
+            x = int(settings.custom_x * width)
+            y = int(settings.custom_y * height)
+        else:
+            # Predefined positions
+            positions = {
+                "bottom-left": (padding, height - bubble_size - padding),
+                "bottom-right": (width - bubble_size - padding, height - bubble_size - padding),
+                "top-left": (padding, padding),
+                "top-right": (width - bubble_size - padding, padding),
+            }
+            x, y = positions.get(settings.position, positions["bottom-left"])
+
+        jobs_store[job_id]["progress"] = 30
+
+        # Build visibility filter if time-based visibility is set
+        visibility_filter = None
+        if settings.visibility:
+            # Build enable expression for time-based visibility
+            enable_parts = []
+            for v in settings.visibility:
+                if v.visible:
+                    enable_parts.append(f"between(t,{v.start},{v.end})")
+            if enable_parts:
+                visibility_filter = "+".join(enable_parts)
+
+        jobs_store[job_id]["progress"] = 50
+
+        # Use FFmpegProcessor for compositing
+        FFmpegProcessor.overlay_camera_bubble(
+            screen_video=video_path,
+            camera_video=camera_path,
+            output_path=output_path,
+            position=settings.position if settings.position != "custom" else "custom",
+            bubble_size=bubble_size,
+            padding=padding,
+            shape=settings.shape,
+            custom_x=x if settings.position == "custom" else None,
+            custom_y=y if settings.position == "custom" else None,
+            visibility_filter=visibility_filter,
+            quality="fast" if preview else "balanced",
+        )
+
+        jobs_store[job_id]["progress"] = 90
+
+        # Update job with output URL
+        jobs_store[job_id]["status"] = "completed"
+        jobs_store[job_id]["progress"] = 100
+        jobs_store[job_id]["output_url"] = f"/api/output/{output_path.name}"
+
+        # Update video store with latest composite
+        video = videos_store[video_path.parent.name] if video_path.parent.name in videos_store else None
+        if video:
+            video["latest_composite"] = str(output_path)
+            video["bubble_settings"] = settings.model_dump()
+
+        logger.info(f"Bubble composite completed: {output_path}")
+
+    except Exception as e:
+        logger.exception(f"Bubble composite failed for job {job_id}")
+        jobs_store[job_id]["status"] = "failed"
+        jobs_store[job_id]["error"] = str(e)
 
 
 async def process_visual_render(
