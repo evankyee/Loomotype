@@ -2239,7 +2239,7 @@ async def process_full_personalization(
                     "-t", str(original_segment_duration),
                     "-vn",  # No video
                     "-acodec", "pcm_s16le",
-                    "-ar", "24000",
+                    "-ar", "44100",  # Match ElevenLabs source rate
                     str(original_audio_segment),
                 ], "Extract original audio segment")
                 temp_files.append(original_audio_segment)

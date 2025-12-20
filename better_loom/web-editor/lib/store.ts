@@ -152,17 +152,54 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   jobProgress: 0,
 
   // Video actions
-  setVideo: (url, id, name) => set({
-    videoUrl: url,
-    videoId: id || null,
-    projectName: name || 'Untitled Project',
-    currentTime: 0,
-    isPlaying: false,
-    trimStart: 0,
-    transcript: null,
-    transcriptEdits: [],
-    visualSelections: [],
-  }),
+  setVideo: (url, id, name) => {
+    set({
+      videoUrl: url,
+      videoId: id || null,
+      projectName: name || 'Untitled Project',
+      currentTime: 0,
+      isPlaying: false,
+      trimStart: 0,
+      transcript: null,
+      transcriptEdits: [],
+      visualSelections: [],
+      analysis: null,
+    });
+
+    // Auto-load transcript and analysis if video has ID (was uploaded to backend)
+    if (id) {
+      // Load transcript with retry (may still be processing)
+      const loadTranscript = async (retries = 5) => {
+        for (let i = 0; i < retries; i++) {
+          try {
+            const transcript = await api.getTranscript(id);
+            if (transcript) {
+              set({ transcript });
+              return;
+            }
+          } catch {}
+          // Wait before retry (2s, 4s, 6s, 8s, 10s)
+          if (i < retries - 1) await new Promise(r => setTimeout(r, (i + 1) * 2000));
+        }
+      };
+      loadTranscript();
+
+      // Load analysis with retry
+      const loadAnalysis = async (retries = 5) => {
+        for (let i = 0; i < retries; i++) {
+          try {
+            const analysis = await api.getAnalysis(id);
+            if (analysis) {
+              set({ analysis });
+              return;
+            }
+          } catch {}
+          if (i < retries - 1) await new Promise(r => setTimeout(r, (i + 1) * 2000));
+        }
+      };
+      loadAnalysis();
+    }
+  },
 
   setProjectName: (name) => set({ projectName: name }),
   setDuration: (duration) => set({ duration, trimEnd: duration }),

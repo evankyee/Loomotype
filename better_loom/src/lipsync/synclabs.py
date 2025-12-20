@@ -249,16 +249,25 @@ class SyncLabsClient:
         audio_path: Path,
     ) -> tuple[str, str]:
         """Upload files to a temporary file hosting service and get public URLs."""
-        # Use litterbox.catbox.moe for temporary file hosting (files kept for 72h)
-        # This works around GCP org policies that block public bucket access
+        # Use 0x0.st for temporary file hosting (files kept based on size, ~30 days for small files)
+        # This returns proper content-types unlike litterbox which returns application/octet-stream
 
-        def upload_to_litterbox(file_path: Path) -> str:
-            """Upload a file to litterbox (temp file host) and get a public URL."""
+        def upload_to_0x0(file_path: Path) -> str:
+            """Upload a file to 0x0.st and get a public URL with correct content-type."""
+            # Determine correct content-type
+            suffix = file_path.suffix.lower()
+            content_types = {
+                ".mp4": "video/mp4",
+                ".webm": "video/webm",
+                ".wav": "audio/wav",
+                ".mp3": "audio/mpeg",
+            }
+            content_type = content_types.get(suffix, "application/octet-stream")
+
             with open(file_path, "rb") as f:
                 response = httpx.post(
-                    "https://litterbox.catbox.moe/resources/internals/api.php",
-                    data={"reqtype": "fileupload", "time": "72h"},
-                    files={"fileToUpload": (file_path.name, f)},
+                    "https://0x0.st",
+                    files={"file": (file_path.name, f, content_type)},
                     timeout=300.0,
                     headers={"User-Agent": "Soron-Video-Pipeline/1.0"},
                 )
@@ -271,12 +280,12 @@ class SyncLabsClient:
                     raise SyncLabsError(f"Invalid URL returned: {url}")
                 return url
 
-        logger.info("Uploading files to temporary hosting (litterbox) in parallel...")
+        logger.info("Uploading files to temporary hosting (0x0.st) in parallel...")
 
         # Upload video and audio in parallel (50% faster)
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-            video_future = executor.submit(upload_to_litterbox, video_path)
-            audio_future = executor.submit(upload_to_litterbox, audio_path)
+            video_future = executor.submit(upload_to_0x0, video_path)
+            audio_future = executor.submit(upload_to_0x0, audio_path)
 
             video_url = video_future.result()
             audio_url = audio_future.result()

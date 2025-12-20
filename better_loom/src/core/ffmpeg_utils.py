@@ -348,7 +348,7 @@ class FFmpegProcessor:
             "-i", str(audio_path),
             "-filter:a", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
             "-acodec", "pcm_s16le",
-            "-ar", "24000",  # Keep at source rate
+            "-ar", "44100",  # Keep at ElevenLabs native rate (no resampling)
             str(output_path),
         ]
 
