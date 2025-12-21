@@ -416,8 +416,12 @@ class SoronRecorder {
         if (audioStream) tracks.push(...audioStream.getAudioTracks());
         recordingStream = new MediaStream(tracks);
 
-        // Start separate camera recording
-        this.startCameraRecording(cameraStream);
+        // Start separate camera recording WITH mic audio
+        // This is critical for voice cloning + lip-sync personalization
+        const cameraTracks = [...cameraStream.getVideoTracks()];
+        if (audioStream) cameraTracks.push(...audioStream.getAudioTracks());
+        const cameraWithAudio = new MediaStream(cameraTracks);
+        this.startCameraRecording(cameraWithAudio);
       } else {
         // Full screen mode OR no camera: record screen directly
         // Camera bubble window will be captured as part of screen

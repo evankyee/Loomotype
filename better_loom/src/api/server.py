@@ -347,12 +347,14 @@ async def upload_video(
         logger.info(f"Creating initial preview with camera overlay...")
         preview_path = video_dir / f"preview_{video_id}.mp4"
         try:
+            # Calculate bubble size as 25% of screen width (default size)
+            default_bubble_size = int(info.width * 0.25)
             FFmpegProcessor.overlay_camera_bubble(
                 screen_video=video_path,
                 camera_video=camera_path,
                 output_path=preview_path,
                 position="bottom-left",
-                bubble_size=180,
+                bubble_size=default_bubble_size,
                 padding=30,
                 use_camera_audio=False,  # Use original screen audio for preview
             )
@@ -598,6 +600,32 @@ async def stream_video(video_id: str):
         video_path,
         media_type=media_type,
         filename=filename,
+    )
+
+
+@app.get("/api/output/{filename}")
+async def get_output_file(filename: str):
+    """Serve output files (composites, processed videos, etc.)."""
+    # Security: only allow serving from OUTPUT_DIR, prevent path traversal
+    safe_filename = Path(filename).name  # Strip any path components
+    file_path = OUTPUT_DIR / safe_filename
+
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail=f"Output file not found: {safe_filename}")
+
+    # Determine media type
+    media_type = "video/mp4"
+    if safe_filename.endswith(".webm"):
+        media_type = "video/webm"
+    elif safe_filename.endswith(".wav"):
+        media_type = "audio/wav"
+    elif safe_filename.endswith(".mp3"):
+        media_type = "audio/mpeg"
+
+    return FileResponse(
+        file_path,
+        media_type=media_type,
+        filename=safe_filename,
     )
 
 
@@ -1013,7 +1041,15 @@ async def clone_voice(
         raise HTTPException(status_code=404, detail="Video not found")
 
     video = videos_store[video_id]
-    video_path = Path(video["path"])
+
+    # Prefer camera file for voice cloning (has mic audio in window mode)
+    # Fall back to main video if no camera file exists
+    if video.get("camera_path") and Path(video["camera_path"]).exists():
+        video_path = Path(video["camera_path"])
+        logger.info(f"Using camera file for voice cloning: {video_path.name}")
+    else:
+        video_path = Path(video["path"])
+        logger.info(f"Using main video for voice cloning: {video_path.name}")
 
     try:
         from ..voice import VoiceClient
@@ -2323,10 +2359,20 @@ async def process_full_personalization(
                     actual_lipsync_duration = lipsync_info.duration
                     logger.info(f"[DUAL RECORDING] Lip-synced camera duration: {actual_lipsync_duration:.2f}s")
 
-                    # Use Sync Labs output directly - avoid re-encoding to preserve quality
-                    # Sync Labs already outputs properly encoded MP4
-                    normalized_camera = lipsync_camera_output
-                    # Note: No additional re-encoding needed - this preserves lip-sync quality
+                    # CRITICAL: Sync Labs outputs audio at 44100Hz, but camera gaps are at 48000Hz
+                    # FFmpeg concat demuxer fails with mixed sample rates - audio gets dropped!
+                    # Re-encode to normalize audio sample rate BEFORE concatenation
+                    normalized_camera = OUTPUT_DIR / f"lipsync_normalized_{job_id}_{i}.mp4"
+                    run_ffmpeg([
+                        "-i", str(lipsync_camera_output),
+                        "-c:v", "copy",  # Keep video as-is (preserve lip-sync quality)
+                        "-c:a", "aac",
+                        "-ar", "48000",  # Match camera recording sample rate
+                        "-b:a", "192k",
+                        str(normalized_camera),
+                    ], f"Normalize lipsync audio sample rate")
+                    temp_files.append(normalized_camera)
+                    logger.info(f"[DUAL RECORDING] Normalized lipsync audio: 44100Hz -> 48000Hz")
 
                     new_end_time = edit.start_time + actual_lipsync_duration
 
@@ -2576,26 +2622,40 @@ async def process_full_personalization(
                             logger.info(f"[DUAL RECORDING] Adding gap: {prev_end:.2f}s - {orig_start:.2f}s ({gap_duration:.2f}s)")
 
                             # Extract camera gap
-                            camera_gap_path = OUTPUT_DIR / f"camera_gap_{job_id}_{seg_idx}.mp4"
+                            camera_gap_path_raw = OUTPUT_DIR / f"camera_gap_{job_id}_{seg_idx}_raw.mp4"
                             FFmpegProcessor.extract_segment(
                                 video_path=camera_path,
                                 start_time=prev_end,
                                 end_time=orig_start,
-                                output_path=camera_gap_path,
+                                output_path=camera_gap_path_raw,
                                 reencode=True,
                             )
+                            temp_files.append(camera_gap_path_raw)
+
+                            # Camera bubble recording has no audio - add silent audio
+                            # so FFmpeg concat can work with lip-synced segments that have audio
+                            camera_gap_path = OUTPUT_DIR / f"camera_gap_{job_id}_{seg_idx}.mp4"
+                            if not FFmpegProcessor.has_audio_stream(camera_gap_path_raw):
+                                logger.info(f"[DUAL RECORDING] Adding silent audio to camera gap")
+                                FFmpegProcessor.add_silent_audio(camera_gap_path_raw, camera_gap_path)
+                            else:
+                                camera_gap_path = camera_gap_path_raw
                             camera_segments_to_concat.append(camera_gap_path)
                             temp_files.append(camera_gap_path)
 
-                            # Extract screen gap
+                            # Extract screen gap (video only - camera provides audio)
                             screen_gap_path = OUTPUT_DIR / f"screen_gap_{job_id}_{seg_idx}.mp4"
-                            FFmpegProcessor.extract_segment(
-                                video_path=current_video,
-                                start_time=prev_end,
-                                end_time=orig_start,
-                                output_path=screen_gap_path,
-                                reencode=True,
-                            )
+                            run_ffmpeg([
+                                "-ss", str(prev_end),
+                                "-i", str(current_video),
+                                "-t", str(gap_duration),
+                                "-an",  # No audio - camera track provides audio
+                                "-c:v", "libx264",
+                                "-preset", "fast",
+                                "-crf", "18",
+                                "-r", "30",
+                                str(screen_gap_path),
+                            ], f"Extract screen gap {seg_idx}")
                             screen_segments_to_concat.append(screen_gap_path)
                             temp_files.append(screen_gap_path)
 
@@ -2622,58 +2682,76 @@ async def process_full_personalization(
                             )
                             temp_files.append(screen_orig_path)
 
-                            # Time-stretch to match new duration
+                            # Time-stretch VIDEO only - we use camera audio for the final output
+                            # Screen audio is discarded (use_camera_audio=True in overlay)
                             speed_factor = orig_duration / new_duration
                             run_ffmpeg([
                                 "-i", str(screen_orig_path),
-                                "-filter_complex", f"[0:v]setpts={1/speed_factor}*PTS[v];[0:a]atempo={speed_factor}[a]",
+                                "-filter_complex", f"[0:v]setpts={1/speed_factor}*PTS[v]",
                                 "-map", "[v]",
-                                "-map", "[a]",
+                                "-an",  # No audio - camera track provides TTS audio
                                 "-c:v", "libx264",
                                 "-preset", "fast",
                                 "-crf", "18",
-                                "-c:a", "aac",
-                                "-ar", "48000",
+                                "-r", "30",  # Force constant frame rate
                                 str(screen_edit_path),
                             ], f"Time-stretch screen segment {seg_idx}")
                         else:
-                            # Duration similar - just extract
-                            FFmpegProcessor.extract_segment(
-                                video_path=current_video,
-                                start_time=orig_start,
-                                end_time=orig_end,
-                                output_path=screen_edit_path,
-                                reencode=True,
-                            )
+                            # Duration similar - extract video only
+                            run_ffmpeg([
+                                "-ss", str(orig_start),
+                                "-i", str(current_video),
+                                "-t", str(orig_duration),
+                                "-an",  # No audio - camera track provides audio
+                                "-c:v", "libx264",
+                                "-preset", "fast",
+                                "-crf", "18",
+                                "-r", "30",
+                                str(screen_edit_path),
+                            ], f"Extract screen edit {seg_idx}")
 
                         screen_segments_to_concat.append(screen_edit_path)
                         temp_files.append(screen_edit_path)
 
                         prev_end = orig_end
 
-                    # Final gap after last edit
+                    # Final gap after last edit (video only - camera provides audio)
                     if prev_end < info.duration:
                         logger.info(f"[DUAL RECORDING] Adding final gap: {prev_end:.2f}s - {info.duration:.2f}s")
 
-                        camera_final_path = OUTPUT_DIR / f"camera_final_{job_id}.mp4"
+                        camera_final_path_raw = OUTPUT_DIR / f"camera_final_{job_id}_raw.mp4"
                         FFmpegProcessor.extract_segment(
                             video_path=camera_path,
                             start_time=prev_end,
                             end_time=camera_info.duration,
-                            output_path=camera_final_path,
+                            output_path=camera_final_path_raw,
                             reencode=True,
                         )
+                        temp_files.append(camera_final_path_raw)
+
+                        # Add silent audio to camera gap
+                        camera_final_path = OUTPUT_DIR / f"camera_final_{job_id}.mp4"
+                        if not FFmpegProcessor.has_audio_stream(camera_final_path_raw):
+                            logger.info(f"[DUAL RECORDING] Adding silent audio to final camera gap")
+                            FFmpegProcessor.add_silent_audio(camera_final_path_raw, camera_final_path)
+                        else:
+                            camera_final_path = camera_final_path_raw
                         camera_segments_to_concat.append(camera_final_path)
                         temp_files.append(camera_final_path)
 
                         screen_final_path = OUTPUT_DIR / f"screen_final_{job_id}.mp4"
-                        FFmpegProcessor.extract_segment(
-                            video_path=current_video,
-                            start_time=prev_end,
-                            end_time=info.duration,
-                            output_path=screen_final_path,
-                            reencode=True,
-                        )
+                        final_duration = info.duration - prev_end
+                        run_ffmpeg([
+                            "-ss", str(prev_end),
+                            "-i", str(current_video),
+                            "-t", str(final_duration),
+                            "-an",  # No audio - camera track provides audio
+                            "-c:v", "libx264",
+                            "-preset", "fast",
+                            "-crf", "18",
+                            "-r", "30",
+                            str(screen_final_path),
+                        ], f"Extract screen final")
                         screen_segments_to_concat.append(screen_final_path)
                         temp_files.append(screen_final_path)
 
@@ -2687,25 +2765,30 @@ async def process_full_personalization(
                     )
                     temp_files.append(composited_camera_path)
 
-                    # Concatenate screen segments into single composited screen
-                    logger.info(f"[DUAL RECORDING] Concatenating {len(screen_segments_to_concat)} screen segments")
+                    # Concatenate screen segments into single composited screen (video only)
+                    # Camera track provides all audio (original voice + TTS for replacements)
+                    logger.info(f"[DUAL RECORDING] Concatenating {len(screen_segments_to_concat)} screen segments (video only)")
                     composited_screen_path = OUTPUT_DIR / f"composited_screen_{job_id}.mp4"
                     FFmpegProcessor.concatenate_segments(
                         segment_paths=screen_segments_to_concat,
                         output_path=composited_screen_path,
                         reencode=True,
+                        video_only=True,  # Screen has no audio - camera provides it
                     )
                     temp_files.append(composited_screen_path)
 
                     # Overlay composited camera onto composited screen
                     logger.info(f"[DUAL RECORDING] Overlaying composited camera onto screen")
                     composed_path = OUTPUT_DIR / f"composed_{job_id}.mp4"
+                    # Calculate bubble size as 25% of screen width
+                    screen_info_temp = get_video_info(composited_screen_path)
+                    bubble_size_temp = int(screen_info_temp.width * 0.25)
                     FFmpegProcessor.overlay_camera_bubble(
                         screen_video=composited_screen_path,
                         camera_video=composited_camera_path,
                         output_path=composed_path,
                         position="bottom-left",
-                        bubble_size=180,
+                        bubble_size=bubble_size_temp,
                         padding=30,
                         use_camera_audio=True,  # Use camera audio (has ElevenLabs TTS for lip-synced segments)
                     )
@@ -2753,12 +2836,15 @@ async def process_full_personalization(
             overlay_output = OUTPUT_DIR / f"camera_overlay_{job_id}.mp4"
 
             # Overlay original camera for the entire video
+            # Calculate bubble size as 25% of screen width
+            current_video_info = get_video_info(current_video)
+            bubble_size_overlay = int(current_video_info.width * 0.25)
             FFmpegProcessor.overlay_camera_bubble(
                 screen_video=current_video,
                 camera_video=camera_path,
                 output_path=overlay_output,
                 position="bottom-left",
-                bubble_size=180,
+                bubble_size=bubble_size_overlay,
                 padding=30,
             )
 

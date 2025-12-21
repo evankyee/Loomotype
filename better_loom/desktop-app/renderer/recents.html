@@ -154,12 +154,66 @@
       color: rgba(255, 255, 255, 0.3);
       font-size: 13px;
     }
+
+    .toggle-cam {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      background: rgba(255, 255, 255, 0.06);
+      border: none;
+      border-radius: 6px;
+      color: rgba(255, 255, 255, 0.4);
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 500;
+      transition: all 0.12s;
+    }
+
+    .toggle-cam:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: rgba(255, 255, 255, 0.6);
+    }
+
+    .toggle-cam.active {
+      background: rgba(59, 130, 246, 0.2);
+      color: rgba(147, 197, 253, 0.9);
+    }
+
+    .toggle-cam svg {
+      width: 12px;
+      height: 12px;
+    }
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .cam-badge {
+      font-size: 9px;
+      padding: 2px 5px;
+      background: rgba(139, 92, 246, 0.25);
+      color: rgba(196, 181, 253, 0.9);
+      border-radius: 4px;
+      margin-left: 4px;
+    }
   </style>
 </head>
 <body>
   <div class="panel">
     <div class="header">
-      <h2>Recent Recordings</h2>
+      <div class="header-left">
+        <h2>Recent Recordings</h2>
+        <button class="toggle-cam" id="toggle-cam" title="Show camera-only files">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M23 7l-7 5 7 5V7z"/>
+            <rect x="1" y="5" width="15" height="14" rx="2"/>
+          </svg>
+          <span>Cam</span>
+        </button>
+      </div>
       <button class="close-btn" id="close-btn">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <line x1="18" y1="6" x2="6" y2="18"/>
@@ -173,13 +227,21 @@
   </div>
 
   <script>
+    let includeCameraOnly = false;
+
     document.getElementById('close-btn').addEventListener('click', () => {
       window.soron.closeRecents();
     });
 
+    document.getElementById('toggle-cam').addEventListener('click', () => {
+      includeCameraOnly = !includeCameraOnly;
+      document.getElementById('toggle-cam').classList.toggle('active', includeCameraOnly);
+      loadRecordings();
+    });
+
     async function loadRecordings() {
       try {
-        const recordings = await window.soron.getRecordings();
+        const recordings = await window.soron.getRecordings({ includeCameraOnly });
         renderRecordings(recordings.slice(0, 8));
       } catch (err) {
         console.error('Error loading recordings:', err);
@@ -195,12 +257,12 @@
       }
 
       container.innerHTML = recordings.map(rec => `
-        <div class="item" data-path="${rec.path}" data-name="${rec.name}">
+        <div class="item" data-path="${rec.path}" data-name="${rec.name}" data-camera="${rec.cameraPath || ''}" data-is-camera="${rec.isCamera || false}">
           <div class="thumb">
             <video src="file://${rec.path}" muted preload="metadata"></video>
           </div>
           <div class="meta">
-            <div class="name">${formatName(rec.name)}</div>
+            <div class="name">${formatName(rec.name, rec.isCamera)}${rec.hasCamera ? ' +cam' : ''}${rec.isCamera ? '<span class="cam-badge">CAM</span>' : ''}</div>
             <div class="date">${formatDate(rec.created)}</div>
           </div>
           <span class="size">${formatSize(rec.size)}</span>
@@ -210,7 +272,10 @@
       container.querySelectorAll('.item').forEach(item => {
         item.addEventListener('click', async () => {
           try {
-            const result = await window.soron.uploadToBackend(item.dataset.path, item.dataset.name);
+            const isCamera = item.dataset.isCamera === 'true';
+            // Camera-only files don't have a paired camera, screen recordings might
+            const cameraPath = isCamera ? null : (item.dataset.camera || null);
+            const result = await window.soron.uploadToBackend(item.dataset.path, item.dataset.name, cameraPath);
             if (result.success && result.videoId) {
               window.soron.openExternal(`http://localhost:3000?video=${result.videoId}`);
               window.soron.closeRecents();
@@ -232,8 +297,9 @@
       });
     }
 
-    function formatName(name) {
-      return name.replace('soron-recording-', '').replace('.webm', '').replace(/-/g, ' ').slice(0, 18);
+    function formatName(name, isCamera) {
+      const prefix = isCamera ? 'soron-camera-' : 'soron-recording-';
+      return name.replace(prefix, '').replace('.webm', '').replace(/-/g, ' ').slice(0, 18);
     }
 
     function formatSize(bytes) {

@@ -235,6 +235,76 @@ class FFmpegProcessor:
         return output_path
 
     @staticmethod
+    def add_silent_audio(
+        video_path: Path,
+        output_path: Path,
+    ) -> Path:
+        """
+        Add silent audio track to a video-only file.
+
+        This is needed for concatenating video-only segments with segments
+        that have audio (like lip-synced segments from Sync Labs).
+        FFmpeg concat requires all segments to have matching stream types.
+
+        Args:
+            video_path: Source video (video-only, no audio)
+            output_path: Where to save the result (video + silent audio)
+
+        Returns:
+            Path to video with silent audio added
+        """
+        # Get video duration
+        info = get_video_info(video_path)
+
+        # Generate silent audio and mux with video
+        # anullsrc generates silent audio, we trim it to match video duration
+        args = [
+            "-i", str(video_path),
+            "-f", "lavfi",
+            "-i", f"anullsrc=channel_layout=stereo:sample_rate=48000",
+            "-t", str(info.duration),
+            "-c:v", "copy",  # Don't re-encode video
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",  # End when video ends
+            "-map", "0:v:0",  # Video from input 0
+            "-map", "1:a:0",  # Audio from input 1 (silent)
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, "Add silent audio")
+        logger.info(f"Added silent audio track to {video_path.name}")
+        return output_path
+
+    @staticmethod
+    def has_audio_stream(video_path: Path) -> bool:
+        """
+        Check if a video file has an audio stream.
+
+        Returns:
+            True if the file has at least one audio stream
+        """
+        try:
+            result = subprocess.run(
+                [
+                    "ffprobe",
+                    "-v", "error",
+                    "-select_streams", "a",
+                    "-show_entries", "stream=codec_type",
+                    "-of", "csv=p=0",
+                    str(video_path),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            # If there's any audio stream, ffprobe outputs "audio"
+            return "audio" in result.stdout.lower()
+        except Exception as e:
+            logger.warning(f"Could not check audio streams: {e}")
+            return False
+
+    @staticmethod
     def time_stretch_audio(
         audio_path: Path,
         target_duration: float,
@@ -396,11 +466,13 @@ class FFmpegProcessor:
         segment_paths: list[Path],
         output_path: Path,
         reencode: bool = True,
+        video_only: bool = False,
     ) -> Path:
         """
         Concatenate video segments in order.
 
         If segments have different codecs/parameters, set reencode=True.
+        If segments are video-only (no audio), set video_only=True.
         """
         if not segment_paths:
             raise ValueError("No segments to concatenate")
@@ -420,7 +492,6 @@ class FFmpegProcessor:
         try:
             if reencode:
                 # Re-encode for compatibility (slower but safer)
-                # Normalize audio sample rate to 48000 Hz to handle Sync Labs output (44100 Hz)
                 # Force keyframes every 1 second for smooth browser playback
                 # Force 30fps output to prevent fps metadata corruption
                 # Use faststart for progressive video loading (plays while downloading)
@@ -434,12 +505,22 @@ class FFmpegProcessor:
                     "-r", "30",  # Force 30fps output (fixes fps metadata issues)
                     "-g", "30",  # Keyframe every 30 frames (~1 sec at 30fps)
                     "-keyint_min", "30",  # Minimum keyframe interval
-                    "-c:a", "aac",
-                    "-ar", "48000",  # Normalize audio sample rate
-                    "-b:a", "192k",
+                ]
+
+                if video_only:
+                    args.append("-an")  # No audio output
+                else:
+                    # Normalize audio sample rate to 48000 Hz to handle Sync Labs output (44100 Hz)
+                    args.extend([
+                        "-c:a", "aac",
+                        "-ar", "48000",
+                        "-b:a", "192k",
+                    ])
+
+                args.extend([
                     "-movflags", "+faststart",  # Enable progressive playback
                     str(output_path),
-                ]
+                ])
             else:
                 # Stream copy (fast but requires compatible segments)
                 # Still use faststart for progressive playback
@@ -447,10 +528,18 @@ class FFmpegProcessor:
                     "-f", "concat",
                     "-safe", "0",
                     "-i", str(concat_file),
-                    "-c", "copy",
+                    "-c:v", "copy",
+                ]
+
+                if video_only:
+                    args.append("-an")  # No audio output
+                else:
+                    args.extend(["-c:a", "copy"])
+
+                args.extend([
                     "-movflags", "+faststart",
                     str(output_path),
-                ]
+                ])
 
             run_ffmpeg(args, "Concatenate segments")
 

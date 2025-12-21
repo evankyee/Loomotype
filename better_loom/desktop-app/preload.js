@@ -13,7 +13,7 @@ contextBridge.exposeInMainWorld('soron', {
     ipcRenderer.invoke('save-recording', { buffer, filename }),
   saveMetadata: (filename, metadata) =>
     ipcRenderer.invoke('save-metadata', { filename, metadata }),
-  getRecordings: () => ipcRenderer.invoke('get-recordings'),
+  getRecordings: (options = {}) => ipcRenderer.invoke('get-recordings', options),
   openFile: (filePath) => ipcRenderer.invoke('open-file', filePath),
   showInFolder: (filePath) => ipcRenderer.invoke('show-in-folder', filePath),
   showSaveDialog: () => ipcRenderer.invoke('show-save-dialog'),
@@ -57,8 +57,8 @@ contextBridge.exposeInMainWorld('soron', {
     ipcRenderer.invoke('upload-for-personalization', { filePath, cameraFilePath, hasEmbeddedBubble }),
 
   // Upload to backend and get video ID for web editor
-  uploadToBackend: (filePath, fileName) =>
-    ipcRenderer.invoke('upload-to-backend', { filePath, fileName }),
+  uploadToBackend: (filePath, fileName, cameraPath) =>
+    ipcRenderer.invoke('upload-to-backend', { filePath, fileName, cameraPath }),
 
   // Open external URL (web editor)
   openExternal: (url) => ipcRenderer.invoke('open-external', url),

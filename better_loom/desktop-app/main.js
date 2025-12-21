@@ -910,23 +910,46 @@ ipcMain.handle('source-picker-select', (event, result) => {
   }
 });
 
-ipcMain.handle('get-recordings', async () => {
+ipcMain.handle('get-recordings', async (event, { includeCameraOnly = false } = {}) => {
   const videosDir = path.join(app.getPath('videos'), 'Soron');
 
   if (!fs.existsSync(videosDir)) {
     return [];
   }
 
-  const files = fs.readdirSync(videosDir)
-    .filter(f => f.endsWith('.webm') || f.endsWith('.mp4'))
+  const allFiles = fs.readdirSync(videosDir)
+    .filter(f => f.endsWith('.webm') || f.endsWith('.mp4'));
+
+  const files = allFiles
+    .filter(f => {
+      const isCamera = f.includes('soron-camera-');
+      // Show camera files only if toggle is on, otherwise hide them
+      if (isCamera) return includeCameraOnly;
+      return true; // Always show screen recordings
+    })
     .map(f => {
       const filePath = path.join(videosDir, f);
       const stats = fs.statSync(filePath);
+      const isCamera = f.includes('soron-camera-');
+
+      // For screen recordings, check if there's a matching camera file
+      let hasCamera = false;
+      let cameraPath = null;
+      if (!isCamera) {
+        const cameraFileName = f.replace('soron-recording-', 'soron-camera-');
+        cameraPath = path.join(videosDir, cameraFileName);
+        hasCamera = fs.existsSync(cameraPath);
+        if (!hasCamera) cameraPath = null;
+      }
+
       return {
         name: f,
         path: filePath,
         size: stats.size,
         created: stats.birthtime,
+        hasCamera,
+        cameraPath,
+        isCamera, // New flag to identify camera-only files
       };
     })
     .sort((a, b) => b.created - a.created);
@@ -1216,14 +1239,20 @@ ipcMain.handle('upload-for-personalization', async (event, { filePath, cameraFil
 });
 
 // Upload video to backend and return video ID for web editor
-ipcMain.handle('upload-to-backend', async (event, { filePath, fileName }) => {
+ipcMain.handle('upload-to-backend', async (event, { filePath, fileName, cameraPath }) => {
   const axios = require('axios');
   const FormData = require('form-data');
 
-  console.log('Uploading to backend:', filePath, fileName);
+  console.log('Uploading to backend:', filePath, fileName, cameraPath ? `with camera: ${cameraPath}` : 'no camera');
 
   const form = new FormData();
   form.append('file', fs.createReadStream(filePath), fileName || path.basename(filePath));
+
+  // Add camera file if it exists
+  if (cameraPath && fs.existsSync(cameraPath)) {
+    form.append('camera_file', fs.createReadStream(cameraPath), path.basename(cameraPath));
+    console.log('Including camera file:', path.basename(cameraPath));
+  }
 
   try {
     const response = await axios.post(`${API_URL}/api/videos/upload`, form, {
