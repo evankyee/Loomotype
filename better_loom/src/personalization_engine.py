@@ -270,7 +270,7 @@ class PersonalizationEngine:
             # Generate speech
             logger.info("  Generating speech...")
             audio_path = self.temp_dir / f"edit_{i}_audio.mp3"
-            audio_path = self.voice_client.generate(
+            audio_path, _ = self.voice_client.generate(
                 text=edit.new_text,
                 voice_id=job.voice_id,
                 output_path=audio_path,

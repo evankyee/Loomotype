@@ -1134,7 +1134,7 @@ async def generate_voice(
         audio_id = str(uuid.uuid4())[:8]
         audio_path = OUTPUT_DIR / f"speech_{audio_id}.wav"
 
-        audio_path = client.generate(
+        audio_path, _ = client.generate(
             text=text,
             voice_id=voice_id,
             output_path=audio_path,
@@ -2052,7 +2052,7 @@ async def process_lipsync_job(
             from ..voice import VoiceClient
             client = VoiceClient()
             audio_path = OUTPUT_DIR / f"lipsync_audio_{job_id}.wav"
-            client.generate(
+            _, _ = client.generate(
                 text=request.text,
                 voice_id=request.voice_id,
                 output_path=audio_path,
@@ -2211,6 +2211,7 @@ async def process_full_personalization(
         info = get_video_info(video_path)
         current_video = video_path
         temp_files = []
+        processed_camera_path = None  # Track lip-synced camera for later bubble compositing
 
         # Check if we have a separate camera file for high-quality lip-sync
         video_metadata = videos_store.get(request.video_id, {})
@@ -2242,22 +2243,33 @@ async def process_full_personalization(
 
             processed_segments = []
 
-            for i, edit in enumerate(request.voice_edits):
+            # ================================================================
+            # REQUEST STITCHING: Track request_ids for prosody continuity
+            # Only use for edits that are CLOSE in timeline (within 5 seconds)
+            # This prevents mixing prosody from unrelated parts of the video
+            # ================================================================
+            request_id_history: list[tuple[str, float, float]] = []  # (request_id, start_time, end_time)
+            MAX_STITCH_GAP = 5.0  # seconds - only stitch edits within this gap
+
+            # Sort edits by start_time for chronological processing
+            sorted_edits = sorted(enumerate(request.voice_edits), key=lambda x: x[1].start_time)
+
+            for orig_i, edit in sorted_edits:
                 voice_id = edit.voice_id or request.voice_id or default_voice_id
                 if not voice_id:
-                    logger.warning(f"No voice ID for edit {i}, skipping")
+                    logger.warning(f"No voice ID for edit {orig_i}, skipping")
                     continue
 
-                progress = 10 + int(40 * (i / len(request.voice_edits)))
+                progress = 10 + int(40 * (orig_i / len(request.voice_edits)))
                 jobs_store[job_id]["progress"] = progress
 
-                logger.info(f"Voice edit {i+1}: '{edit.original_text}' → '{edit.new_text}'")
+                logger.info(f"Voice edit {orig_i+1}: '{edit.original_text}' → '{edit.new_text}'")
 
                 # Generate new audio at NATURAL speed - NO TIME STRETCHING
                 # Research shows time-stretching degrades quality significantly
                 # Instead, we adjust video timing to match natural audio
                 original_segment_duration = edit.end_time - edit.start_time
-                audio_path = OUTPUT_DIR / f"voice_{job_id}_{i}.wav"
+                audio_path = OUTPUT_DIR / f"voice_{job_id}_{orig_i}.wav"
 
                 # Extract surrounding text context for natural prosody matching
                 # This is CRITICAL - without context, TTS sounds disconnected
@@ -2295,18 +2307,39 @@ async def process_full_personalization(
 
                     logger.info(f"Context: prev='{previous_text}' | edit='{edit.new_text}' | next='{next_text}'")
 
-                voice_client.generate(
+                # Find recent request_ids for stitching (only if edits are close in timeline)
+                # This maintains prosody continuity between nearby edits
+                previous_request_ids = None
+                if request_id_history:
+                    # Get request_ids from edits that ended within MAX_STITCH_GAP of this edit's start
+                    recent_ids = [
+                        req_id for req_id, _, end_time in request_id_history
+                        if edit.start_time - end_time <= MAX_STITCH_GAP and edit.start_time >= end_time
+                    ]
+                    if recent_ids:
+                        # Use most recent (up to 3, per ElevenLabs limit)
+                        previous_request_ids = recent_ids[-3:]
+                        logger.info(f"Using {len(previous_request_ids)} previous request_ids for stitching")
+
+                audio_path, new_request_id = voice_client.generate(
                     text=edit.new_text,
                     voice_id=voice_id,
                     output_path=audio_path,
                     previous_text=previous_text,
                     next_text=next_text,
+                    previous_request_ids=previous_request_ids,
                 )
+
+                # Track this request_id for potential future stitching
+                if new_request_id:
+                    request_id_history.append((new_request_id, edit.start_time, edit.end_time))
+                    logger.debug(f"Recorded request_id {new_request_id} for t={edit.start_time:.2f}-{edit.end_time:.2f}")
+
                 temp_files.append(audio_path)
 
                 # Extract original audio segment FIRST - needed for both pitch matching and loudness
                 from ..core.ffmpeg_utils import FFmpegProcessor
-                original_audio_segment = OUTPUT_DIR / f"original_audio_{job_id}_{i}.wav"
+                original_audio_segment = OUTPUT_DIR / f"original_audio_{job_id}_{orig_i}.wav"
                 run_ffmpeg([
                     "-ss", str(edit.start_time),
                     "-i", str(current_video),
@@ -2326,7 +2359,7 @@ async def process_full_personalization(
                     from ..audio.pitch_matcher import match_tts_to_original, is_pitch_matching_available
                     if is_pitch_matching_available():
                         logger.info(f"Applying pitch matching to TTS audio")
-                        pitch_matched_audio = OUTPUT_DIR / f"voice_{job_id}_{i}_pitch_matched.wav"
+                        pitch_matched_audio = OUTPUT_DIR / f"voice_{job_id}_{orig_i}_pitch_matched.wav"
                         audio_path = match_tts_to_original(
                             original_audio=original_audio_segment,
                             tts_audio=audio_path,
@@ -2354,7 +2387,7 @@ async def process_full_personalization(
                     logger.warning(f"Original loudness {original_loudness} too high, clamping to -5 LUFS")
                     original_loudness = -5.0
 
-                normalized_audio = OUTPUT_DIR / f"voice_{job_id}_{i}_normalized.wav"
+                normalized_audio = OUTPUT_DIR / f"voice_{job_id}_{orig_i}_normalized.wav"
                 FFmpegProcessor.normalize_audio_loudness(
                     audio_path=audio_path,
                     output_path=normalized_audio,
@@ -2378,7 +2411,7 @@ async def process_full_personalization(
                     logger.info(f"[DUAL RECORDING] Processing lip-sync on separate camera file")
 
                     # Extract camera segment for lip-sync (camera already at high resolution)
-                    camera_segment_path = OUTPUT_DIR / f"camera_segment_{job_id}_{i}.mp4"
+                    camera_segment_path = OUTPUT_DIR / f"camera_segment_{job_id}_{orig_i}.mp4"
 
                     # Extract slightly more video if audio is longer
                     extract_end = edit.start_time + max(audio_duration, original_segment_duration) + 0.5
@@ -2401,7 +2434,7 @@ async def process_full_personalization(
                     from ..lipsync.synclabs import SyncLabsClient
                     sync_client = SyncLabsClient()
 
-                    lipsync_camera_output = OUTPUT_DIR / f"lipsync_camera_{job_id}_{i}.mp4"
+                    lipsync_camera_output = OUTPUT_DIR / f"lipsync_camera_{job_id}_{orig_i}.mp4"
                     sync_client.lipsync(
                         video_path=camera_segment_path,
                         audio_path=audio_path,
@@ -2422,7 +2455,7 @@ async def process_full_personalization(
                     # CRITICAL: Sync Labs outputs audio at 44100Hz, but camera gaps are at 48000Hz
                     # FFmpeg concat demuxer fails with mixed sample rates - audio gets dropped!
                     # Re-encode to normalize audio sample rate BEFORE concatenation
-                    normalized_camera = OUTPUT_DIR / f"lipsync_normalized_{job_id}_{i}.mp4"
+                    normalized_camera = OUTPUT_DIR / f"lipsync_normalized_{job_id}_{orig_i}.mp4"
                     run_ffmpeg([
                         "-i", str(lipsync_camera_output),
                         "-c:v", "copy",  # Keep video as-is (preserve lip-sync quality)
@@ -2460,7 +2493,7 @@ async def process_full_personalization(
                     bubble_position = video_metadata.get("bubble_position", "bottom-left")
 
                     # Extract the video segment
-                    segment_path = OUTPUT_DIR / f"segment_{job_id}_{i}.mp4"
+                    segment_path = OUTPUT_DIR / f"segment_{job_id}_{orig_i}.mp4"
                     extract_end = edit.start_time + max(audio_duration, original_segment_duration) + 0.5
                     extract_end = min(extract_end, info.duration)
 
@@ -2474,7 +2507,7 @@ async def process_full_personalization(
                     temp_files.append(segment_path)
 
                     # Crop the bubble region for lip-sync
-                    cropped_bubble = OUTPUT_DIR / f"bubble_crop_{job_id}_{i}.mp4"
+                    cropped_bubble = OUTPUT_DIR / f"bubble_crop_{job_id}_{orig_i}.mp4"
                     FFmpegProcessor.crop_bubble_region(
                         video_path=segment_path,
                         output_path=cropped_bubble,
@@ -2488,7 +2521,7 @@ async def process_full_personalization(
                     from ..lipsync.synclabs import SyncLabsClient
                     sync_client = SyncLabsClient()
 
-                    lipsync_bubble = OUTPUT_DIR / f"lipsync_bubble_{job_id}_{i}.mp4"
+                    lipsync_bubble = OUTPUT_DIR / f"lipsync_bubble_{job_id}_{orig_i}.mp4"
                     sync_client.lipsync(
                         video_path=cropped_bubble,
                         audio_path=audio_path,
@@ -2501,7 +2534,7 @@ async def process_full_personalization(
                     logger.info(f"[EMBEDDED BUBBLE] Lip-synced bubble duration: {actual_duration:.2f}s")
 
                     # Overlay lip-synced bubble back onto original segment
-                    final_segment = OUTPUT_DIR / f"final_segment_{job_id}_{i}.mp4"
+                    final_segment = OUTPUT_DIR / f"final_segment_{job_id}_{orig_i}.mp4"
                     FFmpegProcessor.overlay_lipsync_bubble(
                         original_video=segment_path,
                         lipsync_bubble=lipsync_bubble,
@@ -2531,7 +2564,7 @@ async def process_full_personalization(
                 else:
                     # Extract video segment - extend/shrink to match audio duration
                     # This is the key: video adjusts to audio, not audio to video
-                    video_segment_path = OUTPUT_DIR / f"video_segment_{job_id}_{i}.mp4"
+                    video_segment_path = OUTPUT_DIR / f"video_segment_{job_id}_{orig_i}.mp4"
 
                     # Extract slightly more video if audio is longer
                     extract_end = edit.start_time + max(audio_duration, original_segment_duration) + 0.5
@@ -2548,7 +2581,7 @@ async def process_full_personalization(
 
                     # Apply lip-sync to the extracted segment
                     # Sync Labs will use the audio duration, creating natural lip movements
-                    lipsync_output = OUTPUT_DIR / f"lipsync_{job_id}_{i}.mp4"
+                    lipsync_output = OUTPUT_DIR / f"lipsync_{job_id}_{orig_i}.mp4"
 
                     from ..lipsync.synclabs import SyncLabsClient
                     sync_client = SyncLabsClient()
@@ -2570,7 +2603,7 @@ async def process_full_personalization(
                         logger.warning(f"[LIP-SYNC DEBUG] Sync Labs works best with faces >= 256px in video >= 512px")
 
                         # Upscale the video segment for lip-sync processing
-                        upscaled_path = OUTPUT_DIR / f"upscaled_{job_id}_{i}.mp4"
+                        upscaled_path = OUTPUT_DIR / f"upscaled_{job_id}_{orig_i}.mp4"
                         lipsync_input, original_dims = FFmpegProcessor.upscale_for_lipsync(
                             video_path=video_segment_path,
                             output_path=upscaled_path,
@@ -2601,7 +2634,7 @@ async def process_full_personalization(
                     # If we upscaled, now downscale the lip-synced output back to original size
                     if original_dims is not None:
                         logger.info(f"[LIP-SYNC DEBUG] Downscaling back to original {original_dims[0]}x{original_dims[1]}")
-                        downscaled_path = OUTPUT_DIR / f"lipsync_{job_id}_{i}_downscaled.mp4"
+                        downscaled_path = OUTPUT_DIR / f"lipsync_{job_id}_{orig_i}_downscaled.mp4"
                         FFmpegProcessor.downscale_to_original(
                             video_path=lipsync_output,
                             output_path=downscaled_path,
@@ -2837,27 +2870,12 @@ async def process_full_personalization(
                     )
                     temp_files.append(composited_screen_path)
 
-                    # Overlay composited camera onto composited screen
-                    logger.info(f"[DUAL RECORDING] Overlaying composited camera onto screen")
-                    composed_path = OUTPUT_DIR / f"composed_{job_id}.mp4"
-                    # Calculate bubble size as 25% of screen width
-                    screen_info_temp = get_video_info(composited_screen_path)
-                    bubble_size_temp = int(screen_info_temp.width * 0.25)
-                    FFmpegProcessor.overlay_camera_bubble(
-                        screen_video=composited_screen_path,
-                        camera_video=composited_camera_path,
-                        output_path=composed_path,
-                        position="bottom-left",
-                        bubble_size=bubble_size_temp,
-                        padding=30,
-                        use_camera_audio=True,  # Use camera audio (has ElevenLabs TTS for lip-synced segments)
-                    )
-
-                    composed_info = get_video_info(composed_path)
-                    logger.info(f"[DUAL RECORDING] Final composed video: {composed_info.duration:.2f}s")
-
-                    current_video = composed_path
-                    temp_files.append(composed_path)
+                    # DON'T overlay here - save processed tracks for Step 3 (bubble compositing)
+                    # This allows user to control bubble position/size/visibility
+                    processed_camera_path = composited_camera_path
+                    current_video = composited_screen_path
+                    logger.info(f"[DUAL RECORDING] Saved lip-synced camera track for bubble compositing: {processed_camera_path}")
+                    logger.info(f"[DUAL RECORDING] Screen track ready: {current_video}")
 
                 else:
                     # ================================================================
@@ -2887,30 +2905,8 @@ async def process_full_personalization(
                     current_video = composed_path
                     temp_files.append(composed_path)
 
-        # Step 1.5: If we have a camera file but NO voice edits, still overlay it
-        # This ensures the camera bubble appears in the final video even without personalization
-        if camera_path and not request.voice_edits:
-            logger.info(f"[DUAL RECORDING] No voice edits, but overlaying camera bubble onto screen")
-            jobs_store[job_id]["progress"] = 50
-
-            overlay_output = OUTPUT_DIR / f"camera_overlay_{job_id}.mp4"
-
-            # Overlay original camera for the entire video
-            # Calculate bubble size as 25% of screen width
-            current_video_info = get_video_info(current_video)
-            bubble_size_overlay = int(current_video_info.width * 0.25)
-            FFmpegProcessor.overlay_camera_bubble(
-                screen_video=current_video,
-                camera_video=camera_path,
-                output_path=overlay_output,
-                position="bottom-left",
-                bubble_size=bubble_size_overlay,
-                padding=30,
-            )
-
-            current_video = overlay_output
-            temp_files.append(overlay_output)
-            logger.info(f"[DUAL RECORDING] Camera bubble overlaid onto screen")
+        # Note: Camera overlay is now handled in Step 3 (bubble compositing)
+        # This allows bubble position/size/visibility customization even with voice edits
 
         # Step 2: Process visual replacements
         if request.visual_replacements:
@@ -3027,17 +3023,21 @@ async def process_full_personalization(
             current_video = visual_output
             temp_files.append(visual_output)
 
-        # Step 3: Bubble compositing (if bubble_settings provided and camera exists)
-        if request.bubble_settings and video_metadata.get("has_camera") and video_metadata.get("camera_path"):
-            logger.info("Applying bubble compositing settings")
+        # Step 3: Bubble compositing (overlay camera onto screen)
+        # Use processed_camera_path (lip-synced) if available, otherwise original camera_path
+        bubble_camera_source = processed_camera_path if processed_camera_path else camera_path
+
+        if bubble_camera_source and bubble_camera_source.exists():
+            logger.info(f"Applying bubble compositing with camera: {bubble_camera_source.name}")
             jobs_store[job_id]["progress"] = 85
 
-            camera_path = Path(video_metadata["camera_path"])
-            if camera_path.exists():
-                from ..core.ffmpeg_utils import FFmpegProcessor
+            from ..core.ffmpeg_utils import FFmpegProcessor
+            info = get_video_info(current_video)
+            bubble_output = OUTPUT_DIR / f"bubble_{job_id}.mp4"
 
+            # Use bubble_settings if provided, otherwise defaults
+            if request.bubble_settings:
                 # Calculate bubble size in pixels
-                info = get_video_info(current_video)
                 bubble_size_pixels = int(info.width * request.bubble_settings.size)
 
                 # Build visibility filter if any visibility segments defined
@@ -3062,10 +3062,9 @@ async def process_full_personalization(
                     if request.bubble_settings.custom_y is not None:
                         custom_y = int(request.bubble_settings.custom_y * info.height)
 
-                bubble_output = OUTPUT_DIR / f"bubble_{job_id}.mp4"
                 FFmpegProcessor.overlay_camera_bubble(
                     screen_video=current_video,
-                    camera_video=camera_path,
+                    camera_video=bubble_camera_source,
                     output_path=bubble_output,
                     position=request.bubble_settings.position,
                     bubble_size=bubble_size_pixels,
@@ -3073,13 +3072,25 @@ async def process_full_personalization(
                     custom_x=custom_x,
                     custom_y=custom_y,
                     visibility_filter=visibility_filter,
-                    use_camera_audio=True,  # Use camera audio since it may have lip-synced content
+                    use_camera_audio=True,  # Use camera audio (has lip-synced TTS)
                 )
-                current_video = bubble_output
-                temp_files.append(bubble_output)
-                logger.info(f"Bubble compositing complete: {bubble_output}")
+                logger.info(f"Bubble compositing complete with custom settings: {bubble_output}")
             else:
-                logger.warning(f"Camera path not found: {camera_path}, skipping bubble compositing")
+                # Use default bubble settings (25% size, bottom-left, circle)
+                bubble_size_pixels = int(info.width * 0.25)
+                FFmpegProcessor.overlay_camera_bubble(
+                    screen_video=current_video,
+                    camera_video=bubble_camera_source,
+                    output_path=bubble_output,
+                    position="bottom-left",
+                    bubble_size=bubble_size_pixels,
+                    padding=30,
+                    use_camera_audio=True,  # Use camera audio (has lip-synced TTS)
+                )
+                logger.info(f"Bubble compositing complete with defaults: {bubble_output}")
+
+            current_video = bubble_output
+            temp_files.append(bubble_output)
 
         # Step 4: Final output
         jobs_store[job_id]["progress"] = 95

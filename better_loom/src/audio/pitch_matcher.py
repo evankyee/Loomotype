@@ -312,18 +312,25 @@ class PitchMatcher:
             tts_duration = tts_sound.duration
 
             if abs(orig_duration - tts_duration) > 0.01:
-                # Scale time axis of pitch tier
+                # Scale time axis of pitch tier to match TTS duration
+                # We need to create a new tier with scaled times
                 duration_ratio = tts_duration / orig_duration
-                call(orig_tier, "Shift times by", 0, 0)  # Reset
-                # Scale each point's time
+
+                # Get all points first (before modifying)
                 n_points = call(orig_tier, "Get number of points")
+                points = []
                 for i in range(n_points):
                     t = call(orig_tier, "Get time from index", i + 1)
                     f = call(orig_tier, "Get value at index", i + 1)
-                    # Remove old point
-                    call(orig_tier, "Remove point", i + 1)
-                    # Add scaled point
-                    call(orig_tier, "Add point", t * duration_ratio, f)
+                    points.append((t * duration_ratio, f))
+
+                # Remove all points (in reverse order to preserve indices)
+                for i in range(n_points, 0, -1):
+                    call(orig_tier, "Remove point", i)
+
+                # Add scaled points
+                for t, f in points:
+                    call(orig_tier, "Add point", t, f)
 
             # Replace TTS pitch with original contour
             call([manipulation, orig_tier], "Replace pitch tier")

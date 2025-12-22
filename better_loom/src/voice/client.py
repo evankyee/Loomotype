@@ -241,9 +241,10 @@ class VoiceClient:
         use_cache: bool = True,
         previous_text: Optional[str] = None,
         next_text: Optional[str] = None,
-    ) -> Path:
+        previous_request_ids: Optional[list[str]] = None,
+    ) -> tuple[Path, Optional[str]]:
         """
-        Generate speech from text with caching and context for natural prosody.
+        Generate speech from text with caching, context, and request stitching.
 
         Args:
             text: Text to speak
@@ -252,19 +253,26 @@ class VoiceClient:
             use_cache: Whether to use TTS cache (default True)
             previous_text: Text that comes BEFORE this segment (for prosody matching)
             next_text: Text that comes AFTER this segment (for prosody matching)
+            previous_request_ids: Request IDs from previous generations for audio-based
+                                  prosody stitching. Max 3 IDs, must be < 2 hours old.
+                                  If provided, previous_text is ignored (per ElevenLabs API).
 
         Returns:
-            Path to generated audio file (WAV format)
+            Tuple of (path, request_id):
+            - path: Path to generated audio file (WAV format)
+            - request_id: This generation's request ID (for use in subsequent calls)
 
         Note:
-            previous_text and next_text are CRITICAL for natural-sounding word
-            replacement. Without them, each segment is generated in isolation
-            and sounds disconnected. With them, ElevenLabs matches the intonation
-            and prosody to create seamless transitions.
+            Request stitching (previous_request_ids) is SUPERIOR to text context because
+            it uses actual audio from prior generations for prosody matching.
+            Text context (previous_text/next_text) is used as fallback when no prior
+            request IDs are available.
         """
         # Include context in cache key if provided (different context = different prosody)
         cache_content = f"{voice_id}:{text}"
-        if previous_text:
+        if previous_request_ids:
+            cache_content += f"|req_ids:{','.join(previous_request_ids)}"
+        elif previous_text:
             cache_content += f"|prev:{previous_text}"
         if next_text:
             cache_content += f"|next:{next_text}"
@@ -277,38 +285,72 @@ class VoiceClient:
                 if output_path:
                     import shutil
                     shutil.copy(cached_path, output_path)
-                    return output_path
-                return cached_path
+                    return output_path, None  # No request_id for cached results
+                return cached_path, None
 
         # Log context for debugging
         context_info = ""
-        if previous_text:
+        if previous_request_ids:
+            context_info += f" [stitching from {len(previous_request_ids)} prior requests]"
+        elif previous_text:
             context_info += f" [prev: '{previous_text[-20:]}...']"
         if next_text:
             context_info += f" [next: '...{next_text[:20]}']"
         logger.debug(f"Generating: '{text[:50]}...'{context_info}")
 
-        # Generate with ElevenLabs Pro using highest quality settings
-        # Higher stability = more consistent, less variation (good for dubbing)
-        # Higher similarity_boost = closer to original voice
-        # previous_text/next_text = CRITICAL for matching prosody to surrounding speech
-        audio_generator = self.client.text_to_speech.convert(
-            text=text,
-            voice_id=voice_id,
-            model_id=self.model_id,
-            voice_settings=VoiceSettings(
+        # Build API call parameters
+        # Note: If previous_request_ids is provided, previous_text is ignored by ElevenLabs
+        api_params = {
+            "text": text,
+            "voice_id": voice_id,
+            "model_id": self.model_id,
+            "voice_settings": VoiceSettings(
                 stability=0.75,  # Slightly higher for consistent dubbing
                 similarity_boost=0.9,  # Very high for best voice matching (Pro quality)
                 style=0.0,  # No style exaggeration
                 use_speaker_boost=True,  # Enhanced clarity
             ),
-            output_format=self.output_format,  # 44.1kHz PCM (highest quality, Pro plan)
-            previous_text=previous_text,  # Text before this segment for prosody matching
-            next_text=next_text,  # Text after this segment for prosody matching
-        )
+            "output_format": self.output_format,  # 44.1kHz PCM (highest quality, Pro plan)
+        }
 
-        # Collect audio bytes (PCM is raw 16-bit signed little-endian)
-        audio_bytes = b"".join(audio_generator)
+        # Use request stitching if available (superior to text context)
+        if previous_request_ids:
+            api_params["previous_request_ids"] = previous_request_ids[:3]  # Max 3
+            logger.info(f"Using request stitching with {len(previous_request_ids[:3])} prior IDs")
+        else:
+            # Fall back to text context
+            if previous_text:
+                api_params["previous_text"] = previous_text
+            if next_text:
+                api_params["next_text"] = next_text
+
+        # Generate audio - try to capture request_id from headers if possible
+        request_id = None
+        try:
+            # with_raw_response returns an iterator - we need to consume it
+            raw_response_iter = self.client.text_to_speech.with_raw_response.convert(**api_params)
+
+            # Consume the iterator to get audio bytes and try to get headers
+            audio_chunks = []
+            for chunk in raw_response_iter:
+                # chunk might be HttpResponse or bytes depending on SDK version
+                if hasattr(chunk, 'headers'):
+                    request_id = chunk.headers.get("x-request-id") or chunk.headers.get("request-id")
+                    if hasattr(chunk, 'data'):
+                        audio_chunks.extend(chunk.data)
+                    else:
+                        audio_chunks.append(chunk)
+                else:
+                    audio_chunks.append(chunk)
+
+            audio_bytes = b"".join(audio_chunks)
+            if request_id:
+                logger.debug(f"Captured request_id: {request_id}")
+        except Exception as e:
+            # Fallback to regular API call if with_raw_response fails
+            logger.warning(f"with_raw_response failed, falling back to regular call: {e}")
+            audio_generator = self.client.text_to_speech.convert(**api_params)
+            audio_bytes = b"".join(audio_generator)
 
         # Determine output path - use cache dir if caching
         if output_path is None:
@@ -347,8 +389,8 @@ class VoiceClient:
         # Clean up temp PCM
         temp_pcm.unlink()
 
-        logger.debug(f"Generated audio: {output_path}")
-        return output_path
+        logger.debug(f"Generated audio: {output_path}, request_id: {request_id}")
+        return output_path, request_id
 
     def generate_for_segment(
         self,
@@ -378,7 +420,7 @@ class VoiceClient:
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
             raw_audio = Path(f.name)
 
-        self.generate(text, voice_id, raw_audio)
+        _, _ = self.generate(text, voice_id, raw_audio)  # Ignore returned path & request_id
 
         # Check duration
         raw_duration = get_audio_duration(raw_audio)
