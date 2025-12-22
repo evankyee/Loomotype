@@ -581,7 +581,8 @@ class ApiService {
       enable_tracking?: boolean;
       original_text?: string;
     }>,
-    defaultVoiceId?: string
+    defaultVoiceId?: string,
+    bubbleSettings?: BubbleSettings
   ): Promise<{ job_id: string; status: string; progress: number }> {
     return this.request('/personalize', {
       method: 'POST',
@@ -590,6 +591,7 @@ class ApiService {
         voice_edits: voiceEdits,
         visual_replacements: visualReplacements,
         voice_id: defaultVoiceId,
+        bubble_settings: bubbleSettings,
       }),
     });
   }

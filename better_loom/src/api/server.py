@@ -2146,6 +2146,7 @@ class FullPersonalizationRequest(BaseModel):
     voice_edits: list[VoiceEdit] = []
     visual_replacements: list[VisualReplacement] = []
     voice_id: Optional[str] = None  # Default voice for all edits
+    bubble_settings: Optional[BubbleSettings] = None  # Camera bubble position/size/shape/visibility
 
 
 @app.post("/api/personalize")
@@ -2258,15 +2259,52 @@ async def process_full_personalization(
                 original_segment_duration = edit.end_time - edit.start_time
                 audio_path = OUTPUT_DIR / f"voice_{job_id}_{i}.wav"
 
+                # Extract surrounding text context for natural prosody matching
+                # This is CRITICAL - without context, TTS sounds disconnected
+                previous_text = None
+                next_text = None
+
+                # Get transcript to find surrounding words
+                transcript = video_metadata.get("transcript")
+                if transcript and "segments" in transcript:
+                    all_words = []
+                    for seg in transcript["segments"]:
+                        for word in seg.get("words", []):
+                            all_words.append({
+                                "text": word.get("text", ""),
+                                "start": word.get("startTime", word.get("start_time", 0)),
+                                "end": word.get("endTime", word.get("end_time", 0)),
+                            })
+
+                    # Find words before and after this edit's time range
+                    # Collect ~3-5 words of context for natural prosody
+                    words_before = []
+                    words_after = []
+
+                    for w in all_words:
+                        if w["end"] <= edit.start_time:
+                            words_before.append(w["text"])
+                        elif w["start"] >= edit.end_time:
+                            words_after.append(w["text"])
+
+                    # Take last 5 words before, first 5 words after
+                    if words_before:
+                        previous_text = " ".join(words_before[-5:])
+                    if words_after:
+                        next_text = " ".join(words_after[:5])
+
+                    logger.info(f"Context: prev='{previous_text}' | edit='{edit.new_text}' | next='{next_text}'")
+
                 voice_client.generate(
                     text=edit.new_text,
                     voice_id=voice_id,
                     output_path=audio_path,
+                    previous_text=previous_text,
+                    next_text=next_text,
                 )
                 temp_files.append(audio_path)
 
-                # Normalize audio loudness to match original video
-                # Extract original audio segment to measure loudness
+                # Extract original audio segment FIRST - needed for both pitch matching and loudness
                 from ..core.ffmpeg_utils import FFmpegProcessor
                 original_audio_segment = OUTPUT_DIR / f"original_audio_{job_id}_{i}.wav"
                 run_ffmpeg([
@@ -2279,6 +2317,28 @@ async def process_full_personalization(
                     str(original_audio_segment),
                 ], "Extract original audio segment")
                 temp_files.append(original_audio_segment)
+
+                # ================================================================
+                # PITCH MATCHING: Match TTS pitch to original speaker's intonation
+                # This is CRITICAL for natural-sounding word replacements
+                # ================================================================
+                try:
+                    from ..audio.pitch_matcher import match_tts_to_original, is_pitch_matching_available
+                    if is_pitch_matching_available():
+                        logger.info(f"Applying pitch matching to TTS audio")
+                        pitch_matched_audio = OUTPUT_DIR / f"voice_{job_id}_{i}_pitch_matched.wav"
+                        audio_path = match_tts_to_original(
+                            original_audio=original_audio_segment,
+                            tts_audio=audio_path,
+                            output_path=pitch_matched_audio,
+                            use_contour=True,  # Match full intonation contour
+                        )
+                        temp_files.append(pitch_matched_audio)
+                        logger.info(f"Pitch matching complete: {pitch_matched_audio}")
+                    else:
+                        logger.warning("Pitch matching unavailable (parselmouth not installed)")
+                except Exception as e:
+                    logger.warning(f"Pitch matching failed, using original TTS: {e}")
 
                 # Get original loudness and normalize generated audio to match
                 original_loudness = FFmpegProcessor.get_audio_loudness(original_audio_segment)
@@ -2967,7 +3027,61 @@ async def process_full_personalization(
             current_video = visual_output
             temp_files.append(visual_output)
 
-        # Step 3: Final output
+        # Step 3: Bubble compositing (if bubble_settings provided and camera exists)
+        if request.bubble_settings and video_metadata.get("has_camera") and video_metadata.get("camera_path"):
+            logger.info("Applying bubble compositing settings")
+            jobs_store[job_id]["progress"] = 85
+
+            camera_path = Path(video_metadata["camera_path"])
+            if camera_path.exists():
+                from ..core.ffmpeg_utils import FFmpegProcessor
+
+                # Calculate bubble size in pixels
+                info = get_video_info(current_video)
+                bubble_size_pixels = int(info.width * request.bubble_settings.size)
+
+                # Build visibility filter if any visibility segments defined
+                visibility_filter = None
+                if request.bubble_settings.visibility:
+                    # Build FFmpeg enable expression for hiding bubble during specified segments
+                    # visibility.visible=False means HIDE during that time
+                    hide_conditions = []
+                    for seg in request.bubble_settings.visibility:
+                        if not seg.visible:
+                            hide_conditions.append(f"between(t,{seg.start},{seg.end})")
+                    if hide_conditions:
+                        # Enable when NOT in any hide segment
+                        visibility_filter = f"not({'+'.join(hide_conditions)})"
+
+                # Prepare custom position if needed
+                custom_x = None
+                custom_y = None
+                if request.bubble_settings.position == "custom":
+                    if request.bubble_settings.custom_x is not None:
+                        custom_x = int(request.bubble_settings.custom_x * info.width)
+                    if request.bubble_settings.custom_y is not None:
+                        custom_y = int(request.bubble_settings.custom_y * info.height)
+
+                bubble_output = OUTPUT_DIR / f"bubble_{job_id}.mp4"
+                FFmpegProcessor.overlay_camera_bubble(
+                    screen_video=current_video,
+                    camera_video=camera_path,
+                    output_path=bubble_output,
+                    position=request.bubble_settings.position,
+                    bubble_size=bubble_size_pixels,
+                    shape=request.bubble_settings.shape,
+                    custom_x=custom_x,
+                    custom_y=custom_y,
+                    visibility_filter=visibility_filter,
+                    use_camera_audio=True,  # Use camera audio since it may have lip-synced content
+                )
+                current_video = bubble_output
+                temp_files.append(bubble_output)
+                logger.info(f"Bubble compositing complete: {bubble_output}")
+            else:
+                logger.warning(f"Camera path not found: {camera_path}, skipping bubble compositing")
+
+        # Step 4: Final output
         jobs_store[job_id]["progress"] = 95
 
         # Copy to final output path

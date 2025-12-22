@@ -1,15 +1,23 @@
 'use client';
 
-import { useState, useCallback, useEffect } from 'react';
-import { api, BubbleSettings, BubbleVisibility } from '@/lib/api';
+import { useState, useCallback } from 'react';
+import { BubbleSettings, BubbleVisibility } from '@/lib/api';
 
 interface BubblePanelProps {
   videoId: string;
   duration: number;
   currentTime: number;
-  onCompositeStart: (jobId: string) => void;
-  onCompositeComplete: (outputUrl: string) => void;
-  onCompositeError: (error: string) => void;
+  hasCamera: boolean;
+  // Controlled state from parent
+  position: BubbleSettings['position'];
+  size: number;
+  shape: BubbleSettings['shape'];
+  visibility: BubbleVisibility[];
+  // State setters from parent
+  onPositionChange: (position: BubbleSettings['position']) => void;
+  onSizeChange: (size: number) => void;
+  onShapeChange: (shape: BubbleSettings['shape']) => void;
+  onVisibilityChange: (visibility: BubbleVisibility[]) => void;
 }
 
 const POSITIONS = [
@@ -32,47 +40,20 @@ const SIZE_PRESETS = [
 ] as const;
 
 export function BubblePanel({
-  videoId,
   duration,
   currentTime,
-  onCompositeStart,
-  onCompositeComplete,
-  onCompositeError,
+  hasCamera,
+  position,
+  size,
+  shape,
+  visibility,
+  onPositionChange,
+  onSizeChange,
+  onShapeChange,
+  onVisibilityChange,
 }: BubblePanelProps) {
-  const [hasCamera, setHasCamera] = useState(false);
-  const [isLoading, setIsLoading] = useState(true);
-  const [isCompositing, setIsCompositing] = useState(false);
-  const [progress, setProgress] = useState(0);
-
-  // Bubble settings
-  const [position, setPosition] = useState<BubbleSettings['position']>('bottom-left');
-  const [size, setSize] = useState(0.25);
-  const [shape, setShape] = useState<BubbleSettings['shape']>('circle');
-  const [visibility, setVisibility] = useState<BubbleVisibility[]>([]);
-
-  // New visibility segment being added
+  // New visibility segment being added (local UI state only)
   const [newSegmentStart, setNewSegmentStart] = useState<number | null>(null);
-
-  // Check if video has separate camera
-  useEffect(() => {
-    async function checkCamera() {
-      try {
-        const info = await api.getVideoInfo(videoId);
-        setHasCamera(info.has_camera);
-        if (info.bubble_settings) {
-          setPosition(info.bubble_settings.position);
-          setSize(info.bubble_settings.size);
-          setShape(info.bubble_settings.shape);
-          setVisibility(info.bubble_settings.visibility || []);
-        }
-      } catch (err) {
-        console.error('Failed to get video info:', err);
-      } finally {
-        setIsLoading(false);
-      }
-    }
-    checkCamera();
-  }, [videoId]);
 
   // Add visibility segment at current time
   const handleAddVisibilitySegment = useCallback(() => {
@@ -83,58 +64,15 @@ export function BubblePanel({
       // End segment
       const start = Math.min(newSegmentStart, currentTime);
       const end = Math.max(newSegmentStart, currentTime);
-      setVisibility(prev => [...prev, { start, end, visible: false }]);
+      onVisibilityChange([...visibility, { start, end, visible: false }]);
       setNewSegmentStart(null);
     }
-  }, [currentTime, newSegmentStart]);
+  }, [currentTime, newSegmentStart, visibility, onVisibilityChange]);
 
   // Remove visibility segment
   const handleRemoveSegment = useCallback((index: number) => {
-    setVisibility(prev => prev.filter((_, i) => i !== index));
-  }, []);
-
-  // Apply bubble settings
-  const handleApply = useCallback(async (preview: boolean = false) => {
-    setIsCompositing(true);
-    setProgress(0);
-
-    try {
-      const settings: BubbleSettings = {
-        position,
-        size,
-        shape,
-        visibility,
-      };
-
-      const result = await api.compositeBubble(videoId, settings, preview);
-      onCompositeStart(result.job_id);
-
-      // Poll for completion
-      const pollInterval = setInterval(async () => {
-        try {
-          const status = await api.getRenderStatus(result.job_id);
-          setProgress(status.progress);
-
-          if (status.status === 'completed' && status.output_url) {
-            clearInterval(pollInterval);
-            setIsCompositing(false);
-            onCompositeComplete(status.output_url);
-          } else if (status.status === 'failed') {
-            clearInterval(pollInterval);
-            setIsCompositing(false);
-            onCompositeError(status.error || 'Compositing failed');
-          }
-        } catch (err) {
-          clearInterval(pollInterval);
-          setIsCompositing(false);
-          onCompositeError(err instanceof Error ? err.message : 'Polling failed');
-        }
-      }, 1500);
-    } catch (err) {
-      setIsCompositing(false);
-      onCompositeError(err instanceof Error ? err.message : 'Compositing failed');
-    }
-  }, [videoId, position, size, shape, visibility, onCompositeStart, onCompositeComplete, onCompositeError]);
+    onVisibilityChange(visibility.filter((_, i) => i !== index));
+  }, [visibility, onVisibilityChange]);
 
   // Format time as M:SS
   const formatTime = (seconds: number) => {
@@ -142,14 +80,6 @@ export function BubblePanel({
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
-
-  if (isLoading) {
-    return (
-      <div className="p-4 text-center text-foreground-secondary">
-        Loading...
-      </div>
-    );
-  }
 
   if (!hasCamera) {
     return (
@@ -171,6 +101,11 @@ export function BubblePanel({
     <div className="p-4 space-y-4">
       <div className="text-sm font-medium text-foreground">Camera Bubble</div>
 
+      {/* Info banner about accumulative editing */}
+      <div className="text-xs text-foreground-tertiary bg-surface-elevated rounded-md p-2">
+        Changes here are included when you click Preview. You can combine bubble edits with voice and visual edits.
+      </div>
+
       {/* Position */}
       <div className="space-y-2">
         <label className="text-xs text-foreground-secondary">Position</label>
@@ -178,7 +113,7 @@ export function BubblePanel({
           {POSITIONS.map(pos => (
             <button
               key={pos.id}
-              onClick={() => setPosition(pos.id)}
+              onClick={() => onPositionChange(pos.id)}
               className={`px-3 py-2 rounded-md text-xs font-medium transition-all ${
                 position === pos.id
                   ? 'bg-primary text-white'
@@ -198,7 +133,7 @@ export function BubblePanel({
           {SIZE_PRESETS.map(preset => (
             <button
               key={preset.id}
-              onClick={() => setSize(preset.value)}
+              onClick={() => onSizeChange(preset.value)}
               className={`flex-1 px-3 py-2 rounded-md text-xs font-medium transition-all ${
                 Math.abs(size - preset.value) < 0.01
                   ? 'bg-primary text-white'
@@ -215,7 +150,7 @@ export function BubblePanel({
           max="0.5"
           step="0.01"
           value={size}
-          onChange={e => setSize(parseFloat(e.target.value))}
+          onChange={e => onSizeChange(parseFloat(e.target.value))}
           className="w-full accent-primary"
         />
         <div className="text-xs text-foreground-tertiary text-center">
@@ -230,7 +165,7 @@ export function BubblePanel({
           {SHAPES.map(s => (
             <button
               key={s.id}
-              onClick={() => setShape(s.id)}
+              onClick={() => onShapeChange(s.id)}
               className={`flex-1 px-3 py-2 rounded-md text-xs font-medium transition-all ${
                 shape === s.id
                   ? 'bg-primary text-white'
@@ -286,38 +221,6 @@ export function BubblePanel({
               </div>
             ))}
           </div>
-        )}
-      </div>
-
-      {/* Apply Buttons */}
-      <div className="space-y-2 pt-2 border-t border-border-subtle">
-        {isCompositing ? (
-          <div className="space-y-2">
-            <div className="h-2 bg-background-secondary rounded-full overflow-hidden">
-              <div
-                className="h-full bg-primary transition-all duration-300"
-                style={{ width: `${progress}%` }}
-              />
-            </div>
-            <div className="text-xs text-center text-foreground-secondary">
-              Compositing... {progress}%
-            </div>
-          </div>
-        ) : (
-          <>
-            <button
-              onClick={() => handleApply(true)}
-              className="w-full px-4 py-2 rounded-md text-sm font-medium glass-subtle text-foreground-secondary hover:text-foreground transition-all"
-            >
-              Preview
-            </button>
-            <button
-              onClick={() => handleApply(false)}
-              className="w-full px-4 py-2 rounded-md text-sm font-medium bg-primary text-white hover:bg-primary-hover transition-all"
-            >
-              Apply Changes
-            </button>
-          </>
         )}
       </div>
     </div>

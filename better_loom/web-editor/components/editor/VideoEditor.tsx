@@ -7,7 +7,7 @@ import { VisualSelector } from './VisualSelector';
 import { DetectionPanel } from './DetectionPanel';
 import { BubblePanel } from './BubblePanel';
 import { useEditorStore } from '@/lib/store';
-import { api } from '@/lib/api';
+import { api, BubbleSettings, BubbleVisibility } from '@/lib/api';
 
 interface VideoEditorProps {
   videoUrl: string;
@@ -62,6 +62,15 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
   const [bubbleJobId, setBubbleJobId] = useState<string | null>(null);
   const [bubbleOutputUrl, setBubbleOutputUrl] = useState<string | null>(null);
   const [bubbleError, setBubbleError] = useState<string | null>(null);
+
+  // Bubble settings - LIFTED from BubblePanel for accumulative editing
+  // These settings are collected during render and passed to api.personalize()
+  const [bubblePosition, setBubblePosition] = useState<BubbleSettings['position']>('bottom-left');
+  const [bubbleSize, setBubbleSize] = useState(0.25);
+  const [bubbleShape, setBubbleShape] = useState<BubbleSettings['shape']>('circle');
+  const [bubbleVisibility, setBubbleVisibility] = useState<BubbleVisibility[]>([]);
+  const [hasCamera, setHasCamera] = useState(false);
+  const [bubbleSettingsLoaded, setBubbleSettingsLoaded] = useState(false);
 
   // Highlight state for bidirectional sync between panel and video overlay
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -154,6 +163,30 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
       setTrimEnd(apiDuration);
     }
   }, [apiDuration, duration]);
+
+  // Load bubble settings from API when video changes (for accumulative editing)
+  useEffect(() => {
+    if (!videoId || bubbleSettingsLoaded) return;
+
+    async function loadBubbleSettings() {
+      try {
+        const info = await api.getVideoInfo(videoId);
+        setHasCamera(info.has_camera);
+        if (info.bubble_settings) {
+          setBubblePosition(info.bubble_settings.position);
+          setBubbleSize(info.bubble_settings.size);
+          setBubbleShape(info.bubble_settings.shape);
+          setBubbleVisibility(info.bubble_settings.visibility || []);
+        }
+        setBubbleSettingsLoaded(true);
+      } catch (err) {
+        console.error('Failed to load bubble settings:', err);
+        setBubbleSettingsLoaded(true); // Mark as loaded even on error
+      }
+    }
+
+    loadBubbleSettings();
+  }, [videoId, bubbleSettingsLoaded]);
 
   const handleTimeUpdate = useCallback(() => {
     if (videoRef.current) {
@@ -351,9 +384,25 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
         original_text: s.label,
       }));
 
+    // Collect bubble settings if camera is available and settings differ from defaults
+    // Check if bubble settings have been modified from defaults
+    const hasBubbleChanges = hasCamera && (
+      bubblePosition !== 'bottom-left' ||
+      Math.abs(bubbleSize - 0.25) > 0.01 ||
+      bubbleShape !== 'circle' ||
+      bubbleVisibility.length > 0
+    );
+
+    const currentBubbleSettings: BubbleSettings | undefined = hasCamera ? {
+      position: bubblePosition,
+      size: bubbleSize,
+      shape: bubbleShape,
+      visibility: bubbleVisibility,
+    } : undefined;
+
     // Check if there's anything to do
-    if (voiceEdits.length === 0 && visualReplacements.length === 0) {
-      setRenderError('No changes configured. Edit transcript or select visual regions.');
+    if (voiceEdits.length === 0 && visualReplacements.length === 0 && !hasBubbleChanges) {
+      setRenderError('No changes configured. Edit transcript, select visual regions, or adjust camera bubble.');
       return;
     }
 
@@ -364,17 +413,21 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     try {
       let job: { job_id: string; status: string; progress: number };
 
-      // Use full personalization if there are voice edits, otherwise just visual render
-      if (voiceEdits.length > 0) {
-        // Full pipeline with voice + lip-sync + visual
+      // Use full personalization for voice edits, bubble settings, or comprehensive render
+      // Visual-only render is a fast path when only visual changes are needed
+      const needsFullPipeline = voiceEdits.length > 0 || hasBubbleChanges;
+
+      if (needsFullPipeline) {
+        // Full pipeline with voice + lip-sync + visual + bubble compositing
         job = await api.personalize(
           videoId,
           voiceEdits,
           visualReplacements,
-          clonedVoiceId || undefined
+          clonedVoiceId || undefined,
+          currentBubbleSettings
         );
-      } else {
-        // Visual-only render (faster)
+      } else if (visualReplacements.length > 0) {
+        // Visual-only render (faster path when no voice/bubble changes)
         const textReplacements = visualReplacements.map(r => ({
           original_text: r.original_text || '',
           new_text: r.replacement_value,
@@ -386,6 +439,9 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
           end_time: r.end_time,
         }));
         job = await api.renderVideoWithReplacements(videoId, textReplacements);
+      } else {
+        // Should not reach here due to validation above
+        throw new Error('No changes to render');
       }
 
       setRenderJobId(job.job_id);
@@ -424,7 +480,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
       setIsRendering(false);
       setRenderError(err instanceof Error ? err.message : 'Render failed');
     }
-  }, [videoId, visualSelections, editedWords, storeTranscript, clonedVoiceId]);
+  }, [videoId, visualSelections, editedWords, storeTranscript, clonedVoiceId, hasCamera, bubblePosition, bubbleSize, bubbleShape, bubbleVisibility]);
 
   // Handle saving preview to permanent storage
   const handleSavePreview = useCallback(async () => {
@@ -447,13 +503,16 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     }
   }, [renderJobId]);
 
-  // Handle discarding preview and returning to original
-  const handleDiscardPreview = useCallback(() => {
+  // Handle exiting preview mode to continue editing
+  // IMPORTANT: This does NOT discard edits - all pending edits are preserved
+  // User can make more changes and preview again with accumulated edits
+  const handleExitPreview = useCallback(() => {
     setIsPreviewMode(false);
     setPreviewUrl(null);
     setRenderJobId(null);
     setPreviewError(null);
-    // Video will automatically switch back to original URL
+    // Video switches back to original for editing
+    // All edits (editedWords, visualSelections, etc.) remain intact
   }, []);
 
   return (
@@ -484,14 +543,15 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
                 <div className="flex items-center justify-between">
                   <div className="glass px-3 py-1.5 rounded-md flex items-center gap-2 border border-success/20">
                     <span className="w-2 h-2 rounded-full bg-success animate-pulse-subtle" />
-                    <span className="text-xs font-medium text-foreground">Preview</span>
+                    <span className="text-xs font-medium text-foreground">Preview Mode</span>
                   </div>
                   <div className="flex gap-2">
                     <button
-                      onClick={handleDiscardPreview}
+                      onClick={handleExitPreview}
                       className="glass px-3 py-1.5 rounded-md text-xs font-medium text-foreground-secondary hover:text-foreground border border-border-subtle hover:border-border transition-all duration-150"
+                      title="Exit preview and continue editing - all your edits are preserved"
                     >
-                      Discard
+                      ← Continue Editing
                     </button>
                     <button
                       onClick={handleSavePreview}
@@ -562,22 +622,15 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
               videoId={videoId}
               duration={duration}
               currentTime={currentTime}
-              onCompositeStart={(jobId) => {
-                setBubbleJobId(jobId);
-                setBubbleError(null);
-              }}
-              onCompositeComplete={(outputUrl) => {
-                setBubbleOutputUrl(outputUrl);
-                // Switch video source to composite
-                if (videoRef.current) {
-                  const fullUrl = `${window.location.origin.replace(':3000', ':8000')}${outputUrl}`;
-                  videoRef.current.src = fullUrl;
-                  videoRef.current.load();
-                }
-              }}
-              onCompositeError={(error) => {
-                setBubbleError(error);
-              }}
+              hasCamera={hasCamera}
+              position={bubblePosition}
+              size={bubbleSize}
+              shape={bubbleShape}
+              visibility={bubbleVisibility}
+              onPositionChange={setBubblePosition}
+              onSizeChange={setBubbleSize}
+              onShapeChange={setBubbleShape}
+              onVisibilityChange={setBubbleVisibility}
             />
             {bubbleError && (
               <div className="px-4 pb-4">
@@ -684,18 +737,46 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
             </button>
           </div>
 
+          {/* Pending edits indicator */}
+          {(() => {
+            const voiceCount = Object.keys(editedWords).length;
+            const visualCount = visualSelections.filter(s => s.replacementValue || s.replacementType === 'blur' || s.replacementType === 'remove').length;
+            const hasBubble = hasCamera && (bubblePosition !== 'bottom-left' || Math.abs(bubbleSize - 0.25) > 0.01 || bubbleShape !== 'circle' || bubbleVisibility.length > 0);
+            const totalEdits = voiceCount + visualCount + (hasBubble ? 1 : 0);
+
+            if (totalEdits > 0) {
+              return (
+                <div className="flex items-center gap-1.5 text-xs text-foreground-secondary bg-surface-elevated rounded-md px-2 py-1">
+                  <span className="text-foreground-muted">Pending:</span>
+                  {voiceCount > 0 && <span className="text-primary">V:{voiceCount}</span>}
+                  {visualCount > 0 && <span className="text-warning">S:{visualCount}</span>}
+                  {hasBubble && <span className="text-success">C</span>}
+                </div>
+              );
+            }
+            return null;
+          })()}
+
           {/* Render button - cleaner states */}
-          <button
-            onClick={handleRenderVideo}
-            disabled={isRendering || (visualSelections.filter(s => s.replacementValue || s.replacementType === 'blur' || s.replacementType === 'remove').length === 0 && Object.keys(editedWords).length === 0)}
-            className={`h-7 px-3 rounded-md text-xs font-medium transition-all duration-150 flex items-center gap-1.5 ${
-              isRendering
-                ? 'bg-warning/15 text-warning border border-warning/20'
-                : (visualSelections.filter(s => s.replacementValue || s.replacementType === 'blur' || s.replacementType === 'remove').length === 0 && Object.keys(editedWords).length === 0)
-                ? 'bg-surface-elevated text-foreground-muted border border-transparent cursor-not-allowed'
-                : 'bg-success/15 text-success border border-success/20 hover:bg-success/25'
-            }`}
-          >
+          {(() => {
+            const voiceCount = Object.keys(editedWords).length;
+            const visualCount = visualSelections.filter(s => s.replacementValue || s.replacementType === 'blur' || s.replacementType === 'remove').length;
+            const hasBubble = hasCamera && (bubblePosition !== 'bottom-left' || Math.abs(bubbleSize - 0.25) > 0.01 || bubbleShape !== 'circle' || bubbleVisibility.length > 0);
+            const hasAnyEdits = voiceCount > 0 || visualCount > 0 || hasBubble;
+            const isDisabled = isRendering || !hasAnyEdits;
+
+            return (
+              <button
+                onClick={handleRenderVideo}
+                disabled={isDisabled}
+                className={`h-7 px-3 rounded-md text-xs font-medium transition-all duration-150 flex items-center gap-1.5 ${
+                  isRendering
+                    ? 'bg-warning/15 text-warning border border-warning/20'
+                    : !hasAnyEdits
+                    ? 'bg-surface-elevated text-foreground-muted border border-transparent cursor-not-allowed'
+                    : 'bg-success/15 text-success border border-success/20 hover:bg-success/25'
+                }`}
+              >
             {isRendering ? (
               <>
                 <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
@@ -712,7 +793,9 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
                 Render
               </>
             )}
-          </button>
+              </button>
+            );
+          })()}
 
           {/* Render error - more subtle */}
           {renderError && (

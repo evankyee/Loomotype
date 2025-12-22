@@ -550,6 +550,134 @@ class FFmpegProcessor:
         return output_path
 
     @staticmethod
+    def concatenate_with_crossfade(
+        segment_paths: list[Path],
+        output_path: Path,
+        crossfade_duration: float = 0.075,
+    ) -> Path:
+        """
+        Concatenate video segments with audio crossfade for seamless transitions.
+
+        This is the preferred method for voice replacement segments where
+        abrupt cuts between original and TTS audio can sound jarring.
+
+        Args:
+            segment_paths: List of video segment paths to concatenate
+            output_path: Where to save the result
+            crossfade_duration: Duration of audio crossfade in seconds (default 75ms)
+                               50-100ms is perceptually seamless for speech
+
+        Returns:
+            Path to concatenated video with smooth audio transitions
+        """
+        if not segment_paths:
+            raise ValueError("No segments to concatenate")
+
+        if len(segment_paths) == 1:
+            shutil.copy(segment_paths[0], output_path)
+            return output_path
+
+        # For 2 segments, use simple xfade filter
+        if len(segment_paths) == 2:
+            # Get duration of first segment to know where to start crossfade
+            info1 = get_video_info(segment_paths[0])
+            xfade_start = info1.duration - crossfade_duration
+
+            args = [
+                "-i", str(segment_paths[0]),
+                "-i", str(segment_paths[1]),
+                "-filter_complex",
+                f"[0:v][1:v]xfade=transition=fade:duration={crossfade_duration}:offset={xfade_start}[v];"
+                f"[0:a][1:a]acrossfade=d={crossfade_duration}:c1=tri:c2=tri[a]",
+                "-map", "[v]",
+                "-map", "[a]",
+                "-c:v", "libx264",
+                "-preset", "fast",
+                "-crf", "18",
+                "-c:a", "aac",
+                "-ar", "48000",
+                "-b:a", "192k",
+                "-movflags", "+faststart",
+                str(output_path),
+            ]
+            run_ffmpeg(args, "Concatenate with crossfade (2 segments)")
+            return output_path
+
+        # For multiple segments, build a complex filter chain
+        # This chains xfades: [0+1] -> [temp1], [temp1+2] -> [temp2], etc.
+        filter_complex = []
+        current_offset = 0
+
+        # Get durations for offset calculation
+        durations = []
+        for path in segment_paths:
+            info = get_video_info(path)
+            durations.append(info.duration)
+
+        # Build input string
+        inputs = []
+        for path in segment_paths:
+            inputs.extend(["-i", str(path)])
+
+        # Build video xfade chain
+        for i in range(len(segment_paths) - 1):
+            if i == 0:
+                prev_label = "0:v"
+            else:
+                prev_label = f"v{i-1}"
+
+            next_label = f"{i+1}:v"
+
+            if i == len(segment_paths) - 2:
+                out_label = "vout"
+            else:
+                out_label = f"v{i}"
+
+            # Calculate offset (cumulative duration minus crossfade overlap)
+            current_offset = sum(durations[:i+1]) - (crossfade_duration * (i + 1))
+
+            filter_complex.append(
+                f"[{prev_label}][{next_label}]xfade=transition=fade:duration={crossfade_duration}:offset={current_offset}[{out_label}]"
+            )
+
+        # Build audio crossfade chain
+        current_offset = 0
+        for i in range(len(segment_paths) - 1):
+            if i == 0:
+                prev_label = "0:a"
+            else:
+                prev_label = f"a{i-1}"
+
+            next_label = f"{i+1}:a"
+
+            if i == len(segment_paths) - 2:
+                out_label = "aout"
+            else:
+                out_label = f"a{i}"
+
+            filter_complex.append(
+                f"[{prev_label}][{next_label}]acrossfade=d={crossfade_duration}:c1=tri:c2=tri[{out_label}]"
+            )
+
+        args = inputs + [
+            "-filter_complex", ";".join(filter_complex),
+            "-map", "[vout]",
+            "-map", "[aout]",
+            "-c:v", "libx264",
+            "-preset", "fast",
+            "-crf", "18",
+            "-c:a", "aac",
+            "-ar", "48000",
+            "-b:a", "192k",
+            "-movflags", "+faststart",
+            str(output_path),
+        ]
+
+        run_ffmpeg(args, f"Concatenate with crossfade ({len(segment_paths)} segments)")
+        logger.info(f"Concatenated {len(segment_paths)} segments with {crossfade_duration*1000:.0f}ms crossfade")
+        return output_path
+
+    @staticmethod
     def apply_overlay(
         video_path: Path,
         overlay_path: Path,

@@ -239,21 +239,37 @@ class VoiceClient:
         voice_id: str,
         output_path: Optional[Path] = None,
         use_cache: bool = True,
+        previous_text: Optional[str] = None,
+        next_text: Optional[str] = None,
     ) -> Path:
         """
-        Generate speech from text with caching.
+        Generate speech from text with caching and context for natural prosody.
 
         Args:
             text: Text to speak
             voice_id: ElevenLabs voice ID
             output_path: Where to save (optional, creates temp file)
             use_cache: Whether to use TTS cache (default True)
+            previous_text: Text that comes BEFORE this segment (for prosody matching)
+            next_text: Text that comes AFTER this segment (for prosody matching)
 
         Returns:
             Path to generated audio file (WAV format)
+
+        Note:
+            previous_text and next_text are CRITICAL for natural-sounding word
+            replacement. Without them, each segment is generated in isolation
+            and sounds disconnected. With them, ElevenLabs matches the intonation
+            and prosody to create seamless transitions.
         """
-        # Check cache first (saves API calls and time)
-        cache_key = _get_cache_key(text, voice_id)
+        # Include context in cache key if provided (different context = different prosody)
+        cache_content = f"{voice_id}:{text}"
+        if previous_text:
+            cache_content += f"|prev:{previous_text}"
+        if next_text:
+            cache_content += f"|next:{next_text}"
+        cache_key = hashlib.sha256(cache_content.encode()).hexdigest()[:16]
+
         if use_cache and cache_key in _tts_cache:
             cached_path, _ = _tts_cache[cache_key]
             if cached_path.exists():
@@ -264,11 +280,18 @@ class VoiceClient:
                     return output_path
                 return cached_path
 
-        logger.debug(f"Generating: '{text[:50]}...'")
+        # Log context for debugging
+        context_info = ""
+        if previous_text:
+            context_info += f" [prev: '{previous_text[-20:]}...']"
+        if next_text:
+            context_info += f" [next: '...{next_text[:20]}']"
+        logger.debug(f"Generating: '{text[:50]}...'{context_info}")
 
         # Generate with ElevenLabs Pro using highest quality settings
         # Higher stability = more consistent, less variation (good for dubbing)
         # Higher similarity_boost = closer to original voice
+        # previous_text/next_text = CRITICAL for matching prosody to surrounding speech
         audio_generator = self.client.text_to_speech.convert(
             text=text,
             voice_id=voice_id,
@@ -280,6 +303,8 @@ class VoiceClient:
                 use_speaker_boost=True,  # Enhanced clarity
             ),
             output_format=self.output_format,  # 44.1kHz PCM (highest quality, Pro plan)
+            previous_text=previous_text,  # Text before this segment for prosody matching
+            next_text=next_text,  # Text after this segment for prosody matching
         )
 
         # Collect audio bytes (PCM is raw 16-bit signed little-endian)
