@@ -164,6 +164,11 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     }
   }, [apiDuration, duration]);
 
+  // Reset bubble settings loaded flag when video changes
+  useEffect(() => {
+    setBubbleSettingsLoaded(false);
+  }, [videoId]);
+
   // Load bubble settings from API when video changes (for accumulative editing)
   useEffect(() => {
     if (!videoId || bubbleSettingsLoaded) return;
@@ -171,6 +176,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     async function loadBubbleSettings() {
       try {
         const info = await api.getVideoInfo(videoId);
+        console.log('[BubblePanel] Video info:', info.has_camera, info.camera_path);
         setHasCamera(info.has_camera);
         if (info.bubble_settings) {
           setBubblePosition(info.bubble_settings.position);
@@ -615,8 +621,8 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
           />
         )}
 
-        {/* Bubble Panel - shown when in bubble mode (hidden during preview) */}
-        {selectionMode === 'bubble' && !isPreviewMode && videoId && (
+        {/* Bubble Panel - shown when in bubble mode (ALSO during preview for adjustments) */}
+        {selectionMode === 'bubble' && videoId && (
           <div className="w-72 bg-surface border-l border-border-subtle overflow-y-auto">
             <BubblePanel
               videoId={videoId}
@@ -632,6 +638,20 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
               onShapeChange={setBubbleShape}
               onVisibilityChange={setBubbleVisibility}
             />
+            {isPreviewMode && (
+              <div className="px-4 py-3 border-t border-border-subtle">
+                <p className="text-xs text-foreground-tertiary mb-2">
+                  Adjust bubble settings, then click "Update Preview" to apply changes.
+                </p>
+                <button
+                  onClick={handleRenderVideo}
+                  disabled={isRendering}
+                  className="w-full px-3 py-2 rounded-md text-xs font-medium bg-primary text-white hover:bg-primary-hover disabled:opacity-50 transition-all"
+                >
+                  {isRendering ? 'Rendering...' : 'Update Preview'}
+                </button>
+              </div>
+            )}
             {bubbleError && (
               <div className="px-4 pb-4">
                 <div className="text-xs text-danger bg-danger/10 rounded-md p-2">
