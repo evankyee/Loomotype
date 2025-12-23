@@ -859,6 +859,21 @@ let sourcePickerWindow = null;
 let sourcePickerResolve = null;
 
 ipcMain.handle('show-source-picker', async (event, options) => {
+  // Close any existing picker window first (prevents duplicate windows on double-click)
+  if (sourcePickerWindow) {
+    try {
+      sourcePickerWindow.close();
+    } catch (e) {
+      // Window may already be closing
+    }
+    sourcePickerWindow = null;
+  }
+  // Resolve any pending promise as cancelled
+  if (sourcePickerResolve) {
+    sourcePickerResolve({ cancelled: true });
+    sourcePickerResolve = null;
+  }
+
   return new Promise((resolve) => {
     sourcePickerResolve = resolve;
 
@@ -884,9 +899,15 @@ ipcMain.handle('show-source-picker', async (event, options) => {
 
     sourcePickerWindow.loadFile('renderer/source-picker.html');
 
-    // Pass options to picker window
+    // Pass options to picker window and focus it for keyboard events
     sourcePickerWindow.webContents.once('did-finish-load', () => {
       sourcePickerWindow.webContents.send('picker-options', options);
+      sourcePickerWindow.focus();  // Ensure keyboard events (Escape) work
+    });
+
+    // Also focus on show
+    sourcePickerWindow.once('ready-to-show', () => {
+      sourcePickerWindow.focus();
     });
 
     sourcePickerWindow.on('closed', () => {

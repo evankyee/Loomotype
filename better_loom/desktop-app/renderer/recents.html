@@ -26,6 +26,7 @@
     }
 
     .panel {
+      position: relative;
       background: rgba(60, 60, 68, 0.8);
       backdrop-filter: blur(50px) saturate(180%);
       -webkit-backdrop-filter: blur(50px) saturate(180%);
@@ -199,6 +200,55 @@
       border-radius: 4px;
       margin-left: 4px;
     }
+
+    /* Loading overlay */
+    .loading-overlay {
+      position: absolute;
+      inset: 0;
+      background: rgba(30, 30, 35, 0.95);
+      backdrop-filter: blur(10px);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      z-index: 100;
+      border-radius: 18px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+
+    .loading-overlay.visible {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .spinner {
+      width: 32px;
+      height: 32px;
+      border: 3px solid rgba(255, 255, 255, 0.1);
+      border-top-color: rgba(59, 130, 246, 0.8);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.7);
+      text-align: center;
+      max-width: 200px;
+    }
+
+    .loading-subtext {
+      font-size: 11px;
+      color: rgba(255, 255, 255, 0.4);
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
@@ -223,6 +273,15 @@
     </div>
     <div class="list" id="list">
       <div class="empty">No recordings yet</div>
+    </div>
+
+    <!-- Loading overlay -->
+    <div class="loading-overlay" id="loading-overlay">
+      <div class="spinner"></div>
+      <div class="loading-text" id="loading-text">
+        Preparing video...
+        <div class="loading-subtext" id="loading-subtext">Generating camera overlay</div>
+      </div>
     </div>
   </div>
 
@@ -271,17 +330,35 @@
 
       container.querySelectorAll('.item').forEach(item => {
         item.addEventListener('click', async () => {
+          const overlay = document.getElementById('loading-overlay');
+          const loadingText = document.getElementById('loading-text');
+          const loadingSubtext = document.getElementById('loading-subtext');
+
           try {
             const isCamera = item.dataset.isCamera === 'true';
-            // Camera-only files don't have a paired camera, screen recordings might
             const cameraPath = isCamera ? null : (item.dataset.camera || null);
+
+            // Show loading overlay with appropriate message
+            overlay.classList.add('visible');
+            if (cameraPath) {
+              loadingText.childNodes[0].textContent = 'Preparing video...';
+              loadingSubtext.textContent = 'Generating camera overlay';
+            } else {
+              loadingText.childNodes[0].textContent = 'Opening editor...';
+              loadingSubtext.textContent = 'Uploading video';
+            }
+
             const result = await window.soron.uploadToBackend(item.dataset.path, item.dataset.name, cameraPath);
             if (result.success && result.videoId) {
+              loadingSubtext.textContent = 'Opening in browser...';
               window.soron.openExternal(`http://localhost:3000?video=${result.videoId}`);
               window.soron.closeRecents();
+            } else {
+              overlay.classList.remove('visible');
             }
           } catch (err) {
             console.error('Error:', err);
+            overlay.classList.remove('visible');
           }
         });
 

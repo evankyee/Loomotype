@@ -602,6 +602,8 @@ class ApiService {
     duration: number;
     width: number;
     height: number;
+    preview_path?: string;
+    preview_generating?: boolean;
   }> {
     return this.request(`/videos/${videoId}`);
   }

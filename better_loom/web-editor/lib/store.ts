@@ -167,42 +167,47 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
 
     // Auto-load transcript and analysis if video has ID (was uploaded to backend)
-    // Uses exponential backoff: 500ms, 1s, 2s, 4s, 8s = 15.5s total (vs 30s with linear)
+    // Uses exponential backoff with longer timeout for transcription (can take 30-60s)
     if (id) {
       // Load transcript with exponential backoff (may still be processing)
-      const loadTranscript = async (retries = 5) => {
-        let delay = 500; // Start at 500ms
+      const loadTranscript = async (retries = 12) => {
+        let delay = 1000; // Start at 1s
         for (let i = 0; i < retries; i++) {
           try {
             const transcript = await api.getTranscript(id);
             if (transcript) {
+              console.log('[Transcript] Loaded successfully');
               set({ transcript });
               return;
             }
           } catch {}
-          // Exponential backoff: 500ms → 1s → 2s → 4s → 8s
+          // Exponential backoff: 1s → 2s → 4s → 5s → 5s... (cap at 5s)
+          // Total: ~60s of retry time
           if (i < retries - 1) {
+            console.log(`[Transcript] Not ready, retrying in ${delay/1000}s...`);
             await new Promise(r => setTimeout(r, delay));
-            delay = Math.min(delay * 2, 8000); // Double delay, cap at 8s
+            delay = Math.min(delay * 1.5, 5000); // Increase by 50%, cap at 5s
           }
         }
+        console.log('[Transcript] Failed to load after retries');
       };
       loadTranscript();
 
       // Load analysis with exponential backoff (runs in parallel with transcript)
-      const loadAnalysis = async (retries = 5) => {
-        let delay = 500;
+      const loadAnalysis = async (retries = 12) => {
+        let delay = 1000;
         for (let i = 0; i < retries; i++) {
           try {
             const analysis = await api.getAnalysis(id);
             if (analysis) {
+              console.log('[Analysis] Loaded successfully');
               set({ analysis });
               return;
             }
           } catch {}
           if (i < retries - 1) {
             await new Promise(r => setTimeout(r, delay));
-            delay = Math.min(delay * 2, 8000);
+            delay = Math.min(delay * 1.5, 5000);
           }
         }
       };

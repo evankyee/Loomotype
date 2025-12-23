@@ -750,7 +750,12 @@ class SoronRecorder {
       const shouldUpload = autoUpload !== false; // Default to true if not set
 
       if (shouldUpload) {
-        this.showNotification('Recording saved, uploading...');
+        // Show appropriate loading message based on whether we have camera
+        if (cameraFilePath) {
+          this.showNotification('Processing... generating camera overlay');
+        } else {
+          this.showNotification('Uploading to editor...');
+        }
 
         // Upload with camera file path if exists
         const uploadResult = await window.soron.uploadForPersonalization(
@@ -760,6 +765,7 @@ class SoronRecorder {
         );
         await this.triggerProcessing(uploadResult.video_id);
 
+        this.showNotification('Opening editor...');
         const editorUrl = `http://localhost:3000?video=${uploadResult.video_id}`;
         window.soron.openExternal(editorUrl);
       } else {

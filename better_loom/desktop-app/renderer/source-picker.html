@@ -166,6 +166,35 @@
       color: var(--text);
     }
 
+    /* Close button in corner */
+    .close-btn {
+      position: absolute;
+      top: 16px;
+      right: 16px;
+      width: 28px;
+      height: 28px;
+      background: rgba(255, 255, 255, 0.1);
+      border: none;
+      border-radius: 50%;
+      color: var(--text-secondary);
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.15s;
+      z-index: 10;
+    }
+
+    .close-btn:hover {
+      background: rgba(255, 100, 100, 0.3);
+      color: #ff6b6b;
+    }
+
+    .picker {
+      position: relative;
+    }
+
     .empty-msg {
       color: var(--text-tertiary);
       font-size: 12px;
@@ -176,6 +205,7 @@
 </head>
 <body>
   <div class="picker">
+    <button class="close-btn" id="close-btn" title="Close (Esc)">×</button>
     <div class="title">Select Recording Source</div>
 
     <div class="section">
@@ -271,15 +301,39 @@
       return div.innerHTML;
     }
 
-    document.getElementById('cancel-btn').addEventListener('click', () => {
-      window.soron.sourcePickerSelect({ cancelled: true });
-    });
+    // Close/cancel function
+    function closePickerWindow() {
+      console.log('Closing source picker...');
+      if (window.soron && window.soron.sourcePickerSelect) {
+        window.soron.sourcePickerSelect({ cancelled: true });
+      } else {
+        console.error('window.soron.sourcePickerSelect not available');
+        // Fallback: try to close window directly
+        window.close();
+      }
+    }
 
+    // Cancel button at bottom
+    document.getElementById('cancel-btn').addEventListener('click', closePickerWindow);
+
+    // X button in corner
+    document.getElementById('close-btn').addEventListener('click', closePickerWindow);
+
+    // Escape key
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        window.soron.sourcePickerSelect({ cancelled: true });
+        closePickerWindow();
       }
     });
+
+    // Click outside the picker to close (on the transparent body area)
+    document.body.addEventListener('click', (e) => {
+      if (e.target === document.body) {
+        closePickerWindow();
+      }
+    });
+
+    console.log('Source picker initialized');
   </script>
 </body>
 </html>

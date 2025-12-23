@@ -341,21 +341,27 @@ async def upload_video(
         camera_info = get_video_info(camera_path)
         logger.info(f"Camera file uploaded: {camera_path.name} ({camera_info.width}x{camera_info.height}, {camera_info.duration:.1f}s)")
 
-    # If we have a camera file, queue preview generation in background (non-blocking)
-    # Preview will be created asynchronously - frontend will show camera loading state
+    # If we have a camera file, create preview with camera overlay (synchronous)
+    # This ensures camera is visible when editor opens
     preview_path = None
     if camera_path:
+        logger.info(f"Creating preview with camera overlay...")
         preview_path = video_dir / f"preview_{video_id}.mp4"
-        # Pass info to background task (we need dimensions)
-        background_tasks.add_task(
-            create_camera_preview_async,
-            video_id=video_id,
-            screen_path=video_path,
-            camera_path=camera_path,
-            preview_path=preview_path,
-            screen_width=info.width,
-        )
-        logger.info(f"Preview generation queued in background for {video_id}")
+        try:
+            default_bubble_size = int(info.width * 0.25)
+            FFmpegProcessor.overlay_camera_bubble(
+                screen_video=video_path,
+                camera_video=camera_path,
+                output_path=preview_path,
+                position="bottom-left",
+                bubble_size=default_bubble_size,
+                padding=30,
+                use_camera_audio=False,
+            )
+            logger.info(f"Preview created: {preview_path}")
+        except Exception as e:
+            logger.error(f"Failed to create preview overlay: {e}")
+            preview_path = None
 
     # Store metadata (use updated path in case file was converted)
     # Embedded bubble constants (must match desktop app)
@@ -404,8 +410,7 @@ async def upload_video(
         "url": f"/api/videos/{video_id}/stream",
         "has_camera": camera_path is not None,
         "has_embedded_bubble": has_embedded_bubble,
-        "has_preview": False,  # Preview generates in background, will be True when ready
-        "preview_generating": camera_path is not None,  # True if preview is being generated
+        "has_preview": preview_path is not None,
         "processing": auto_process,  # Indicates background processing started
     }
 
@@ -438,10 +443,16 @@ def create_camera_preview_async(
         if video_id in videos_store:
             video = videos_store[video_id]
             video["preview_path"] = str(preview_path)
+            video["preview_generating"] = False
             videos_store[video_id] = video
         logger.info(f"[{video_id}] Preview generation complete: {preview_path}")
     except Exception as e:
         logger.error(f"[{video_id}] Background preview generation failed: {e}")
+        # Mark as not generating even on failure
+        if video_id in videos_store:
+            video = videos_store[video_id]
+            video["preview_generating"] = False
+            videos_store[video_id] = video
 
 
 async def auto_process_video(video_id: str):
@@ -616,8 +627,14 @@ async def stream_video(video_id: str):
 
     video = videos_store[video_id]
 
-    # Prefer preview (has camera overlay) if available
-    video_path = video.get("preview_path") or video["path"]
+    # Prefer preview (has camera overlay) if available AND file exists
+    # Preview might be generating in background, so check file exists
+    preview_path = video.get("preview_path")
+    if preview_path and Path(preview_path).exists():
+        video_path = preview_path
+    else:
+        video_path = video["path"]
+
     filename = Path(video_path).name
 
     # Determine media type from file extension
