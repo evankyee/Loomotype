@@ -148,7 +148,7 @@ class GoogleVisionClient:
         video_path: Path,
         interval_seconds: float = 1.0,
         max_frames: int = 30,
-        parallel_workers: int = 4,
+        parallel_workers: int = 12,  # Increased from 4 - Google Vision API handles this well
     ) -> list[FrameAnalysis]:
         """
         Extract frames from video and analyze each one in parallel.
@@ -157,7 +157,7 @@ class GoogleVisionClient:
             video_path: Path to video file
             interval_seconds: Time between extracted frames
             max_frames: Maximum number of frames to analyze
-            parallel_workers: Number of parallel analysis threads (default 4)
+            parallel_workers: Number of parallel analysis threads (default 12 for 3x faster)
 
         Returns:
             List of FrameAnalysis for each extracted frame

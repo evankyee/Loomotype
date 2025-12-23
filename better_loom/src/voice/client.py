@@ -63,6 +63,8 @@ class VoiceClient:
             )
 
         self.client = ElevenLabs(api_key=self.api_key)
+        # eleven_multilingual_v2 is "most lifelike and emotionally rich" - best for quality
+        # eleven_turbo_v2_5 is 300% faster but lower quality
         self.model_id = "eleven_multilingual_v2"
 
         # Pro plan: Use highest quality output (44.1kHz PCM)
@@ -305,9 +307,10 @@ class VoiceClient:
             "voice_id": voice_id,
             "model_id": self.model_id,
             "voice_settings": VoiceSettings(
-                stability=0.75,  # Slightly higher for consistent dubbing
-                similarity_boost=0.9,  # Very high for best voice matching (Pro quality)
-                style=0.0,  # No style exaggeration
+                # ElevenLabs recommended defaults for natural speech:
+                stability=0.5,  # 0.5 = balanced (lower=expressive, higher=monotone)
+                similarity_boost=0.75,  # 0.75 = good match without artifacts
+                style=0.0,  # MUST be 0 - any higher causes instability/artifacts
                 use_speaker_boost=True,  # Enhanced clarity
             ),
             "output_format": self.output_format,  # 44.1kHz PCM (highest quality, Pro plan)

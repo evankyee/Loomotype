@@ -499,9 +499,7 @@ class FFmpegProcessor:
                     "-f", "concat",
                     "-safe", "0",
                     "-i", str(concat_file),
-                    "-c:v", "libx264",
-                    "-preset", "fast",
-                    "-crf", "18",
+                    *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
                     "-r", "30",  # Force 30fps output (fixes fps metadata issues)
                     "-g", "30",  # Keyframe every 30 frames (~1 sec at 30fps)
                     "-keyint_min", "30",  # Minimum keyframe interval
@@ -591,9 +589,7 @@ class FFmpegProcessor:
                 f"[0:a][1:a]acrossfade=d={crossfade_duration}:c1=tri:c2=tri[a]",
                 "-map", "[v]",
                 "-map", "[a]",
-                "-c:v", "libx264",
-                "-preset", "fast",
-                "-crf", "18",
+                *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
                 "-c:a", "aac",
                 "-ar", "48000",
                 "-b:a", "192k",
@@ -663,9 +659,7 @@ class FFmpegProcessor:
             "-filter_complex", ";".join(filter_complex),
             "-map", "[vout]",
             "-map", "[aout]",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
             "-c:a", "aac",
             "-ar", "48000",
             "-b:a", "192k",
@@ -715,9 +709,7 @@ class FFmpegProcessor:
             "-i", str(video_path),
             "-i", str(overlay_path),
             "-filter_complex", f"[0][1]{overlay_filter}",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
             "-c:a", "copy",
             str(output_path),
         ]
@@ -783,9 +775,7 @@ class FFmpegProcessor:
 
         args = inputs + [
             "-filter_complex", filter_complex,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
             "-c:a", "copy",
             str(output_path),
         ]
@@ -829,9 +819,7 @@ class FFmpegProcessor:
         args = [
             "-i", str(video_path),
             "-vf", vf,
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
             "-c:a", "copy",
             str(output_path),
         ]
@@ -886,9 +874,7 @@ class FFmpegProcessor:
         args = [
             "-i", str(video_path),
             "-vf", f"scale={new_width}:{new_height}:flags=lanczos",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
             "-c:a", "aac",
             "-ar", "48000",
             "-b:a", "192k",
@@ -929,9 +915,7 @@ class FFmpegProcessor:
         args = [
             "-i", str(video_path),
             "-vf", f"scale={width}:{height}:flags=lanczos",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
             "-g", "30",  # Keyframe every 30 frames
             "-keyint_min", "30",
             "-c:a", "aac",
@@ -994,9 +978,7 @@ class FFmpegProcessor:
         args = [
             "-i", str(video_path),
             "-vf", f"crop={bubble_size}:{bubble_size}:{x}:{y}",
-            "-c:v", "libx264",
-            "-preset", "fast",
-            "-crf", "18",
+            *get_video_encoding_args("balanced"),  # Use hardware acceleration if available
             "-r", "30",
             "-c:a", "aac",
             "-ar", "48000",
@@ -1195,16 +1177,30 @@ class FFmpegProcessor:
                 f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(pow(X-{radius},2)+pow(Y-{radius},2),pow({radius},2)),255,0)'"
             )
         elif shape == "rounded":
-            # Rounded corners (less aggressive than full circle)
-            corner_radius = bubble_size // 6
+            # Rounded rectangle with corner radius = 20% of size
+            # Use drawbox approach: full square with rounded corners via alpha mask
+            cr = bubble_size // 5  # corner radius
+            sz = bubble_size
+            # Alpha = 255 if pixel is inside rounded rect:
+            # - In center (not in corner zones): always visible
+            # - In corner zones: check distance from corner arc center
             shape_filter = (
                 f"format=rgba,"
-                f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if("
-                f"(X<{corner_radius})*(Y<{corner_radius})*gt(pow(X-{corner_radius},2)+pow(Y-{corner_radius},2),pow({corner_radius},2))+"
-                f"(X>{bubble_size-corner_radius})*(Y<{corner_radius})*gt(pow(X-{bubble_size-corner_radius},2)+pow(Y-{corner_radius},2),pow({corner_radius},2))+"
-                f"(X<{corner_radius})*(Y>{bubble_size-corner_radius})*gt(pow(X-{corner_radius},2)+pow(Y-{bubble_size-corner_radius},2),pow({corner_radius},2))+"
-                f"(X>{bubble_size-corner_radius})*(Y>{bubble_size-corner_radius})*gt(pow(X-{bubble_size-corner_radius},2)+pow(Y-{bubble_size-corner_radius},2),pow({corner_radius},2)),"
-                f"0,255)'"
+                f"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':"
+                f"a='255*("
+                # Center band (horizontal) - always visible
+                f"between(X,{cr},{sz-cr})+"
+                # Center band (vertical) - always visible
+                f"between(Y,{cr},{sz-cr})+"
+                # Top-left corner arc
+                f"(lt(X,{cr})*lt(Y,{cr})*lte(pow(X-{cr},2)+pow(Y-{cr},2),pow({cr},2)))+"
+                # Top-right corner arc
+                f"(gt(X,{sz-cr-1})*lt(Y,{cr})*lte(pow(X-{sz-cr},2)+pow(Y-{cr},2),pow({cr},2)))+"
+                # Bottom-left corner arc
+                f"(lt(X,{cr})*gt(Y,{sz-cr-1})*lte(pow(X-{cr},2)+pow(Y-{sz-cr},2),pow({cr},2)))+"
+                # Bottom-right corner arc
+                f"(gt(X,{sz-cr-1})*gt(Y,{sz-cr-1})*lte(pow(X-{sz-cr},2)+pow(Y-{sz-cr},2),pow({cr},2)))"
+                f")'"
             )
         else:  # square
             shape_filter = "format=rgba"  # No alpha masking needed for square

@@ -9,6 +9,59 @@ import { BubblePanel } from './BubblePanel';
 import { useEditorStore } from '@/lib/store';
 import { api, BubbleSettings, BubbleVisibility } from '@/lib/api';
 
+/**
+ * Adaptive polling for job status - starts fast, slows down over time.
+ * Reduces perceived latency by detecting completion quickly while
+ * avoiding excessive polling on long-running jobs.
+ */
+function createAdaptivePoller(
+  pollFn: () => Promise<{ done: boolean; error?: string }>,
+  onComplete: () => void,
+  onError: (error: string) => void,
+  initialInterval: number = 250,  // Start fast
+  maxInterval: number = 2000,     // Cap at 2s
+  backoffFactor: number = 1.5     // Increase by 50% each poll
+) {
+  let interval = initialInterval;
+  let timeoutId: NodeJS.Timeout | null = null;
+  let cancelled = false;
+
+  const poll = async () => {
+    if (cancelled) return;
+
+    try {
+      const result = await pollFn();
+      if (cancelled) return;
+
+      if (result.done) {
+        if (result.error) {
+          onError(result.error);
+        } else {
+          onComplete();
+        }
+        return;
+      }
+
+      // Schedule next poll with increased interval (adaptive backoff)
+      interval = Math.min(interval * backoffFactor, maxInterval);
+      timeoutId = setTimeout(poll, interval);
+    } catch (err) {
+      if (!cancelled) {
+        onError(err instanceof Error ? err.message : 'Polling failed');
+      }
+    }
+  };
+
+  // Start polling immediately
+  poll();
+
+  // Return cancel function
+  return () => {
+    cancelled = true;
+    if (timeoutId) clearTimeout(timeoutId);
+  };
+}
+
 interface VideoEditorProps {
   videoUrl: string;
 }
@@ -175,7 +228,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
 
     async function loadBubbleSettings() {
       try {
-        const info = await api.getVideoInfo(videoId);
+        const info = await api.getVideoInfo(videoId!);
         console.log('[BubblePanel] Video info:', info.has_camera, info.camera_path);
         setHasCamera(info.has_camera);
         if (info.bubble_settings) {
@@ -452,36 +505,40 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
 
       setRenderJobId(job.job_id);
 
-      // Poll for completion
-      const pollInterval = setInterval(async () => {
-        try {
-          const status = await api.getRenderStatus(job.job_id);
+      // Adaptive polling - starts at 250ms, backs off to 2s max
+      // Detects completion ~1.5s faster than fixed 2s polling
+      const jobId = job.job_id;
+      createAdaptivePoller(
+        async () => {
+          const status = await api.getRenderStatus(jobId);
           setRenderProgress(status.progress);
-
           if (status.status === 'completed') {
-            clearInterval(pollInterval);
-            setIsRendering(false);
-            // Switch to preview mode - show rendered video in editor
-            const preview = api.getPreviewUrl(job.job_id);
-            setPreviewUrl(preview);
-            setPreviewError(null);  // Clear any previous preview error
-            setIsPreviewMode(true);
-            // Pause and reset to start for preview
-            if (videoRef.current) {
-              videoRef.current.pause();
-              videoRef.current.currentTime = 0;
-            }
+            return { done: true };
           } else if (status.status === 'failed') {
-            clearInterval(pollInterval);
-            setIsRendering(false);
-            setRenderError(status.error || 'Render failed');
+            return { done: true, error: status.error || 'Render failed' };
           }
-        } catch (err) {
-          clearInterval(pollInterval);
+          return { done: false };
+        },
+        () => {
+          // On complete
           setIsRendering(false);
-          setRenderError(err instanceof Error ? err.message : 'Polling failed');
-        }
-      }, 2000);
+          const preview = api.getPreviewUrl(jobId);
+          setPreviewUrl(preview);
+          setPreviewError(null);
+          setIsPreviewMode(true);
+          if (videoRef.current) {
+            videoRef.current.pause();
+            videoRef.current.currentTime = 0;
+          }
+        },
+        (error) => {
+          // On error
+          setIsRendering(false);
+          setRenderError(error);
+        },
+        250,  // Start fast
+        2000  // Cap at 2s for long jobs
+      );
     } catch (err) {
       setIsRendering(false);
       setRenderError(err instanceof Error ? err.message : 'Render failed');
@@ -520,6 +577,63 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     // Video switches back to original for editing
     // All edits (editedWords, visualSelections, etc.) remain intact
   }, []);
+
+  // Fast bubble-only update during preview mode
+  // Uses cached processed tracks - skips TTS + lip-sync for instant updates
+  const handleFastBubbleUpdate = useCallback(async () => {
+    if (!renderJobId || !hasCamera) return;
+
+    setIsRendering(true);
+    setRenderProgress(0);
+    setRenderError(null);
+
+    try {
+      const settings: BubbleSettings = {
+        position: bubblePosition,
+        size: bubbleSize,
+        shape: bubbleShape,
+        visibility: bubbleVisibility,
+      };
+
+      // Call fast endpoint that skips TTS/lip-sync
+      const job = await api.updateBubbleFast(renderJobId, settings);
+
+      // Adaptive polling for fast bubble updates - starts at 150ms
+      // These are quick operations so we use faster polling than full renders
+      const jobId = job.job_id;
+      createAdaptivePoller(
+        async () => {
+          const status = await api.getRenderStatus(jobId);
+          setRenderProgress(status.progress);
+          if (status.status === 'completed') {
+            return { done: true };
+          } else if (status.status === 'failed') {
+            return { done: true, error: status.error || 'Bubble update failed' };
+          }
+          return { done: false };
+        },
+        () => {
+          // On complete
+          setIsRendering(false);
+          const preview = api.getPreviewUrl(jobId);
+          setPreviewUrl(preview);
+          setRenderJobId(jobId); // Update to new job for future updates
+        },
+        (error) => {
+          // On error
+          setIsRendering(false);
+          setRenderError(error);
+        },
+        150,  // Start very fast for quick operations
+        1000  // Cap at 1s since bubble updates are fast
+      );
+    } catch (err) {
+      setIsRendering(false);
+      // Fall back to full render if fast update fails (e.g., no cached tracks)
+      console.warn('Fast bubble update failed, falling back to full render:', err);
+      handleRenderVideo();
+    }
+  }, [renderJobId, hasCamera, bubblePosition, bubbleSize, bubbleShape, bubbleVisibility, handleRenderVideo]);
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
@@ -641,14 +755,14 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
             {isPreviewMode && (
               <div className="px-4 py-3 border-t border-border-subtle">
                 <p className="text-xs text-foreground-tertiary mb-2">
-                  Adjust bubble settings, then click "Update Preview" to apply changes.
+                  Adjust bubble settings, then click to apply. Fast update uses cached lip-sync.
                 </p>
                 <button
-                  onClick={handleRenderVideo}
+                  onClick={handleFastBubbleUpdate}
                   disabled={isRendering}
-                  className="w-full px-3 py-2 rounded-md text-xs font-medium bg-primary text-white hover:bg-primary-hover disabled:opacity-50 transition-all"
+                  className="w-full px-3 py-2 rounded-md text-xs font-medium bg-success text-white hover:bg-success-hover disabled:opacity-50 transition-all"
                 >
-                  {isRendering ? 'Rendering...' : 'Update Preview'}
+                  {isRendering ? 'Updating...' : 'Fast Update (no re-render)'}
                 </button>
               </div>
             )}

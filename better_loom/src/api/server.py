@@ -341,27 +341,21 @@ async def upload_video(
         camera_info = get_video_info(camera_path)
         logger.info(f"Camera file uploaded: {camera_path.name} ({camera_info.width}x{camera_info.height}, {camera_info.duration:.1f}s)")
 
-    # If we have a camera file, create an initial preview with camera overlay
+    # If we have a camera file, queue preview generation in background (non-blocking)
+    # Preview will be created asynchronously - frontend will show camera loading state
     preview_path = None
     if camera_path:
-        logger.info(f"Creating initial preview with camera overlay...")
         preview_path = video_dir / f"preview_{video_id}.mp4"
-        try:
-            # Calculate bubble size as 25% of screen width (default size)
-            default_bubble_size = int(info.width * 0.25)
-            FFmpegProcessor.overlay_camera_bubble(
-                screen_video=video_path,
-                camera_video=camera_path,
-                output_path=preview_path,
-                position="bottom-left",
-                bubble_size=default_bubble_size,
-                padding=30,
-                use_camera_audio=False,  # Use original screen audio for preview
-            )
-            logger.info(f"Preview created: {preview_path}")
-        except Exception as e:
-            logger.error(f"Failed to create preview overlay: {e}")
-            preview_path = None
+        # Pass info to background task (we need dimensions)
+        background_tasks.add_task(
+            create_camera_preview_async,
+            video_id=video_id,
+            screen_path=video_path,
+            camera_path=camera_path,
+            preview_path=preview_path,
+            screen_width=info.width,
+        )
+        logger.info(f"Preview generation queued in background for {video_id}")
 
     # Store metadata (use updated path in case file was converted)
     # Embedded bubble constants (must match desktop app)
@@ -410,9 +404,44 @@ async def upload_video(
         "url": f"/api/videos/{video_id}/stream",
         "has_camera": camera_path is not None,
         "has_embedded_bubble": has_embedded_bubble,
-        "has_preview": preview_path is not None,
+        "has_preview": False,  # Preview generates in background, will be True when ready
+        "preview_generating": camera_path is not None,  # True if preview is being generated
         "processing": auto_process,  # Indicates background processing started
     }
+
+
+def create_camera_preview_async(
+    video_id: str,
+    screen_path: Path,
+    camera_path: Path,
+    preview_path: Path,
+    screen_width: int,
+):
+    """
+    Background task: Generate camera preview overlay.
+    Non-blocking - runs after upload returns.
+    """
+    try:
+        logger.info(f"[{video_id}] Starting background preview generation...")
+        # Calculate bubble size as 25% of screen width (default size)
+        default_bubble_size = int(screen_width * 0.25)
+        FFmpegProcessor.overlay_camera_bubble(
+            screen_video=screen_path,
+            camera_video=camera_path,
+            output_path=preview_path,
+            position="bottom-left",
+            bubble_size=default_bubble_size,
+            padding=30,
+            use_camera_audio=False,  # Use original screen audio for preview
+        )
+        # Update videos_store to indicate preview is ready
+        if video_id in videos_store:
+            video = videos_store[video_id]
+            video["preview_path"] = str(preview_path)
+            videos_store[video_id] = video
+        logger.info(f"[{video_id}] Preview generation complete: {preview_path}")
+    except Exception as e:
+        logger.error(f"[{video_id}] Background preview generation failed: {e}")
 
 
 async def auto_process_video(video_id: str):
@@ -1076,7 +1105,7 @@ async def clone_voice(
         # Step 2: Extract 90 seconds of audio starting from speech start
         # Use WAV 48kHz for highest quality voice cloning
         # PVC (Pro) benefits from clean, uncompressed audio samples
-        audio_path = video_path.parent / "voice_sample.wav"
+        raw_audio_path = video_path.parent / "voice_sample_raw.wav"
         result = subprocess.run([
             "ffmpeg", "-y",
             "-ss", str(speech_start),  # Start from when speech begins
@@ -1086,12 +1115,45 @@ async def clone_voice(
             "-ar", "48000",  # Professional sample rate
             "-ac", "1",  # Mono
             "-t", "90",  # 1 minute 30 seconds
-            str(audio_path)
+            str(raw_audio_path)
         ], capture_output=True, text=True)
 
         if result.returncode != 0:
             logger.error(f"FFmpeg audio extraction failed: {result.stderr}")
             raise HTTPException(status_code=500, detail=f"Audio extraction failed: {result.stderr}")
+
+        # Step 3: CRITICAL - Clean the audio before cloning
+        # ElevenLabs clones EVERYTHING including noise, reverb, artifacts
+        # Use FFmpeg filters to clean the audio:
+        # - highpass: Remove low frequency rumble (<80Hz)
+        # - lowpass: Remove high frequency hiss (>12kHz for speech)
+        # - afftdn: Adaptive noise reduction
+        # - dynaudnorm: Normalize volume levels
+        # - compand: Gentle compression for consistent levels
+        audio_path = video_path.parent / "voice_sample.wav"
+        clean_result = subprocess.run([
+            "ffmpeg", "-y",
+            "-i", str(raw_audio_path),
+            "-af", (
+                "highpass=f=80,"  # Remove rumble below 80Hz
+                "lowpass=f=12000,"  # Remove hiss above 12kHz
+                "afftdn=nf=-20,"  # Noise reduction (gentle, -20dB noise floor)
+                "dynaudnorm=p=0.9:s=5,"  # Normalize dynamics
+                "volume=1.5"  # Slight boost for clarity
+            ),
+            "-acodec", "pcm_s16le",
+            "-ar", "48000",
+            "-ac", "1",
+            str(audio_path)
+        ], capture_output=True, text=True)
+
+        if clean_result.returncode != 0:
+            logger.warning(f"Audio cleaning failed, using raw audio: {clean_result.stderr}")
+            audio_path = raw_audio_path  # Fall back to raw if cleaning fails
+        else:
+            logger.info("Audio cleaned: noise reduction + normalization applied")
+            # Clean up raw file
+            raw_audio_path.unlink(missing_ok=True)
 
         # Verify audio file exists and has content
         if not audio_path.exists() or audio_path.stat().st_size < 1000:
@@ -1630,7 +1692,11 @@ async def download_render(job_id: str):
     if job["status"] != "completed":
         raise HTTPException(status_code=400, detail=f"Job status: {job['status']}")
 
-    output_path = OUTPUT_DIR / f"render_{job_id}.mp4"
+    # Use stored output_path if available, fall back to legacy path
+    output_path = Path(job.get("output_path", ""))
+    if not output_path.exists():
+        # Legacy fallback
+        output_path = OUTPUT_DIR / f"render_{job_id}.mp4"
     if not output_path.exists():
         raise HTTPException(status_code=404, detail="Render output not found")
 
@@ -1639,6 +1705,156 @@ async def download_render(job_id: str):
         media_type="video/mp4",
         filename=f"personalized_{job_id}.mp4",
     )
+
+
+@app.post("/api/render/{job_id}/update-bubble")
+async def update_bubble_only(
+    job_id: str,
+    request: BubbleSettings,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Fast bubble-only update using cached processed tracks.
+
+    This skips TTS + lip-sync and only re-composites the bubble overlay.
+    Requires a previous personalization job that cached the processed tracks.
+    """
+    if job_id not in jobs_store:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = jobs_store[job_id]
+
+    # Check for cached tracks - look in current job first, then parent job
+    cached_camera = job.get("cached_camera_path")
+    cached_screen = job.get("cached_screen_path")
+
+    # If not in current job, check parent job (for chained bubble updates)
+    if (not cached_camera or not cached_screen) and job.get("parent_job_id"):
+        parent_job = jobs_store.get(job["parent_job_id"], {})
+        cached_camera = cached_camera or parent_job.get("cached_camera_path")
+        cached_screen = cached_screen or parent_job.get("cached_screen_path")
+        # Also walk up the chain if needed (bubble update of bubble update)
+        while (not cached_camera or not cached_screen) and parent_job.get("parent_job_id"):
+            parent_job = jobs_store.get(parent_job["parent_job_id"], {})
+            cached_camera = cached_camera or parent_job.get("cached_camera_path")
+            cached_screen = cached_screen or parent_job.get("cached_screen_path")
+
+    if not cached_camera or not cached_screen:
+        raise HTTPException(
+            status_code=400,
+            detail="No cached tracks found. Run full personalization first."
+        )
+
+    camera_path = Path(cached_camera)
+    screen_path = Path(cached_screen)
+
+    if not camera_path.exists() or not screen_path.exists():
+        raise HTTPException(
+            status_code=400,
+            detail="Cached tracks expired. Run full personalization again."
+        )
+
+    # Create new job for bubble update
+    new_job_id = f"{job_id}-bubble-{str(uuid.uuid4())[:4]}"
+    output_path = OUTPUT_DIR / f"bubble_update_{new_job_id}.mp4"
+
+    jobs_store[new_job_id] = {
+        "job_id": new_job_id,
+        "parent_job_id": job_id,
+        "type": "bubble_update",
+        "status": "pending",
+        "progress": 0,
+        "output_url": None,
+        "error": None,
+        "created_at": datetime.now().isoformat(),
+        # Copy cached paths so subsequent updates don't need to traverse chain
+        "cached_camera_path": cached_camera,
+        "cached_screen_path": cached_screen,
+    }
+
+    # Start fast background processing
+    background_tasks.add_task(
+        process_bubble_update,
+        new_job_id,
+        camera_path,
+        screen_path,
+        output_path,
+        request,
+    )
+
+    return {
+        "job_id": new_job_id,
+        "status": "pending",
+        "message": "Fast bubble update started (skipping TTS/lip-sync)",
+    }
+
+
+async def process_bubble_update(
+    job_id: str,
+    camera_path: Path,
+    screen_path: Path,
+    output_path: Path,
+    settings: BubbleSettings,
+):
+    """Fast bubble-only compositing using cached tracks."""
+    try:
+        jobs_store[job_id]["status"] = "processing"
+        jobs_store[job_id]["progress"] = 20
+
+        from ..core.ffmpeg_utils import FFmpegProcessor
+
+        # Get screen dimensions
+        info = get_video_info(screen_path)
+        bubble_size_pixels = int(info.width * settings.size)
+
+        jobs_store[job_id]["progress"] = 40
+
+        # Build visibility filter
+        visibility_filter = None
+        if settings.visibility:
+            hide_conditions = []
+            for seg in settings.visibility:
+                if not seg.visible:
+                    hide_conditions.append(f"between(t,{seg.start},{seg.end})")
+            if hide_conditions:
+                visibility_filter = f"not({'+'.join(hide_conditions)})"
+
+        # Custom position
+        custom_x = None
+        custom_y = None
+        if settings.position == "custom":
+            if settings.custom_x is not None:
+                custom_x = int(settings.custom_x * info.width)
+            if settings.custom_y is not None:
+                custom_y = int(settings.custom_y * info.height)
+
+        jobs_store[job_id]["progress"] = 60
+
+        # Fast composite - just overlay, no TTS/lip-sync!
+        FFmpegProcessor.overlay_camera_bubble(
+            screen_video=screen_path,
+            camera_video=camera_path,
+            output_path=output_path,
+            position=settings.position,
+            bubble_size=bubble_size_pixels,
+            shape=settings.shape,
+            custom_x=custom_x,
+            custom_y=custom_y,
+            visibility_filter=visibility_filter,
+            use_camera_audio=True,
+        )
+
+        jobs_store[job_id]["progress"] = 100
+        jobs_store[job_id]["status"] = "completed"
+        jobs_store[job_id]["output_url"] = f"/api/render/{job_id}/download"
+        jobs_store[job_id]["output_path"] = str(output_path)
+
+        logger.info(f"[FAST] Bubble update complete: {output_path} (skipped TTS/lip-sync)")
+
+    except Exception as e:
+        logger.exception("Bubble update failed")
+        jobs_store[job_id]["status"] = "failed"
+        jobs_store[job_id]["error"] = str(e)
 
 
 @app.get("/api/templates")
@@ -3026,6 +3242,13 @@ async def process_full_personalization(
         # Step 3: Bubble compositing (overlay camera onto screen)
         # Use processed_camera_path (lip-synced) if available, otherwise original camera_path
         bubble_camera_source = processed_camera_path if processed_camera_path else camera_path
+
+        # CACHE the processed tracks for fast bubble-only updates later
+        # This avoids re-running TTS + lip-sync when user just adjusts bubble position/size
+        if bubble_camera_source:
+            jobs_store[job_id]["cached_camera_path"] = str(bubble_camera_source)
+            jobs_store[job_id]["cached_screen_path"] = str(current_video)
+            logger.info(f"[CACHE] Saved processed tracks for bubble-only updates")
 
         if bubble_camera_source and bubble_camera_source.exists():
             logger.info(f"Applying bubble compositing with camera: {bubble_camera_source.name}")

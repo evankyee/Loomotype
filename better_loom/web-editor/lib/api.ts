@@ -180,10 +180,6 @@ class ApiService {
     return response.json();
   }
 
-  async getVideoInfo(videoId: string): Promise<VideoUploadResponse> {
-    return this.request<VideoUploadResponse>(`/videos/${videoId}`);
-  }
-
   async listVideos(): Promise<VideoUploadResponse[]> {
     return this.request<VideoUploadResponse[]>('/videos');
   }
@@ -621,6 +617,21 @@ class ApiService {
         bubble_settings: settings,
         preview,
       }),
+    });
+  }
+
+  /**
+   * Fast bubble-only update using cached processed tracks.
+   * Skips TTS + lip-sync, only re-composites the bubble overlay.
+   * Use this when adjusting bubble after initial personalization preview.
+   */
+  async updateBubbleFast(
+    jobId: string,
+    settings: BubbleSettings
+  ): Promise<{ job_id: string; status: string; message: string }> {
+    return this.request(`/render/${jobId}/update-bubble`, {
+      method: 'POST',
+      body: JSON.stringify(settings),
     });
   }
 }
