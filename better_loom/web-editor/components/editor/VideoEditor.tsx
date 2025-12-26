@@ -148,6 +148,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     transcribeVideo,
     videoId,
     duration: apiDuration,
+    segments,
   } = useEditorStore();
 
   // Local state for edited words (edits overlay on top of store transcript)
@@ -247,11 +248,50 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     loadBubbleSettings();
   }, [videoId, bubbleSettingsLoaded]);
 
+  // Check if a time falls within a valid (non-trimmed, non-deleted) segment
+  const getValidTimeRanges = useCallback(() => {
+    if (!segments || segments.length === 0) return [];
+
+    return segments
+      .filter(s => !s.isDeleted)
+      .map(s => ({
+        start: s.originalStart + s.trimStart,
+        end: s.originalEnd - s.trimEnd,
+      }))
+      .filter(r => r.end > r.start) // Filter out empty ranges
+      .sort((a, b) => a.start - b.start);
+  }, [segments]);
+
   const handleTimeUpdate = useCallback(() => {
-    if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
+    if (!videoRef.current) return;
+
+    const time = videoRef.current.currentTime;
+    setCurrentTime(time);
+
+    // Real-time segment skipping: if current time is in a trimmed/deleted area, skip to next valid position
+    if (segments && segments.length > 0 && isPlaying) {
+      const validRanges = getValidTimeRanges();
+
+      if (validRanges.length === 0) return;
+
+      // Check if current time is within any valid range
+      const inValidRange = validRanges.some(r => time >= r.start && time <= r.end);
+
+      if (!inValidRange) {
+        // Find the next valid range
+        const nextRange = validRanges.find(r => r.start > time);
+
+        if (nextRange) {
+          // Skip to start of next valid range
+          videoRef.current.currentTime = nextRange.start;
+        } else {
+          // No more valid ranges, pause at end
+          videoRef.current.pause();
+          setIsPlaying(false);
+        }
+      }
     }
-  }, []);
+  }, [segments, isPlaying, getValidTimeRanges]);
 
   // Handle video load errors (especially for preview)
   const handleVideoError = useCallback(() => {
@@ -280,6 +320,37 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     if (videoRef.current) {
       // Guard against non-finite values
       const safeTime = isFinite(time) ? time : 0;
+
+      // If we have segments, find the nearest valid position
+      if (segments && segments.length > 0) {
+        const validRanges = getValidTimeRanges();
+
+        if (validRanges.length > 0) {
+          // Check if time is in a valid range
+          const inRange = validRanges.find(r => safeTime >= r.start && safeTime <= r.end);
+
+          if (inRange) {
+            // Time is valid, use it
+            videoRef.current.currentTime = safeTime;
+          } else {
+            // Find nearest valid range
+            const nextRange = validRanges.find(r => r.start > safeTime);
+            const prevRange = [...validRanges].reverse().find(r => r.end < safeTime);
+
+            if (nextRange && (!prevRange || (nextRange.start - safeTime) < (safeTime - prevRange.end))) {
+              videoRef.current.currentTime = nextRange.start;
+            } else if (prevRange) {
+              videoRef.current.currentTime = prevRange.end;
+            } else if (validRanges.length > 0) {
+              videoRef.current.currentTime = validRanges[0].start;
+            }
+          }
+          setCurrentTime(videoRef.current.currentTime);
+          return;
+        }
+      }
+
+      // Fallback to simple trim logic
       const safeStart = isFinite(trimStart) ? trimStart : 0;
       const safeEnd = isFinite(trimEnd) ? trimEnd : videoRef.current.duration || 0;
 
@@ -289,7 +360,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
         setCurrentTime(videoRef.current.currentTime);
       }
     }
-  }, [trimStart, trimEnd]);
+  }, [trimStart, trimEnd, segments, getValidTimeRanges]);
 
   const toggleMute = useCallback(() => {
     if (videoRef.current) {
@@ -392,8 +463,8 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     }));
   }, []);
 
-  // Get cloned voice ID from store
-  const { selectedVoiceId: clonedVoiceId } = useEditorStore();
+  // Get cloned voice ID and deletions from store (segments already imported above)
+  const { selectedVoiceId: clonedVoiceId, deletions, getOrderedSegments } = useEditorStore();
 
   // Render video with all configured replacements (visual + voice)
   const handleRenderVideo = useCallback(async () => {
@@ -459,9 +530,42 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
       visibility: bubbleVisibility,
     } : undefined;
 
+    // Convert deletions to API format
+    const deletionEdits = deletions.map(d => ({
+      start_time: d.startTime,
+      end_time: d.endTime,
+    }));
+
+    // Convert segments to API format (only non-deleted, sorted by outputStart)
+    const activeSegs = segments.filter(s => !s.isDeleted).sort((a, b) => (a.outputStart || 0) - (b.outputStart || 0));
+    const hasSegmentEdits = segments.length > 1 || segments.some(s => s.isDeleted || s.trimStart > 0 || s.trimEnd > 0);
+    const segmentEdits = hasSegmentEdits ? activeSegs.map(s => ({
+      id: s.id,
+      original_start: s.originalStart,
+      original_end: s.originalEnd,
+      trim_start: s.trimStart,
+      trim_end: s.trimEnd,
+      output_start: s.outputStart || 0,
+      order: s.order,
+    })) : undefined;
+
+    // Debug logging
+    console.log('[Render] ===== SEGMENT DEBUG =====');
+    console.log('[Render] segments.length:', segments.length);
+    console.log('[Render] Full segments state:', JSON.stringify(segments, null, 2));
+    console.log('[Render] Active segments (non-deleted):', activeSegs.length);
+    console.log('[Render] hasSegmentEdits:', hasSegmentEdits);
+    console.log('[Render] segmentEdits being sent:', segmentEdits);
+    if (segments.length > 0) {
+      segments.forEach((s, i) => {
+        console.log(`[Render] Segment ${i}: original=${s.originalStart.toFixed(2)}-${s.originalEnd.toFixed(2)}, trim=${s.trimStart.toFixed(2)}/${s.trimEnd.toFixed(2)}, deleted=${s.isDeleted}`);
+      });
+    }
+    console.log('[Render] ===========================');
+
     // Check if there's anything to do
-    if (voiceEdits.length === 0 && visualReplacements.length === 0 && !hasBubbleChanges) {
-      setRenderError('No changes configured. Edit transcript, select visual regions, or adjust camera bubble.');
+    if (voiceEdits.length === 0 && visualReplacements.length === 0 && !hasBubbleChanges && deletionEdits.length === 0 && !hasSegmentEdits) {
+      setRenderError('No changes configured. Edit transcript, delete words, split/trim clips, select visual regions, or adjust camera bubble.');
       return;
     }
 
@@ -472,18 +576,20 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
     try {
       let job: { job_id: string; status: string; progress: number };
 
-      // Use full personalization for voice edits, bubble settings, or comprehensive render
+      // Use full personalization for voice edits, bubble settings, deletions, segments, or comprehensive render
       // Visual-only render is a fast path when only visual changes are needed
-      const needsFullPipeline = voiceEdits.length > 0 || hasBubbleChanges;
+      const needsFullPipeline = voiceEdits.length > 0 || hasBubbleChanges || deletionEdits.length > 0 || hasSegmentEdits;
 
       if (needsFullPipeline) {
-        // Full pipeline with voice + lip-sync + visual + bubble compositing
+        // Full pipeline with voice + lip-sync + visual + bubble compositing + deletions + segments
         job = await api.personalize(
           videoId,
           voiceEdits,
           visualReplacements,
           clonedVoiceId || undefined,
-          currentBubbleSettings
+          currentBubbleSettings,
+          deletionEdits.length > 0 ? deletionEdits : undefined,
+          segmentEdits
         );
       } else if (visualReplacements.length > 0) {
         // Visual-only render (faster path when no voice/bubble changes)
@@ -543,7 +649,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
       setIsRendering(false);
       setRenderError(err instanceof Error ? err.message : 'Render failed');
     }
-  }, [videoId, visualSelections, editedWords, storeTranscript, clonedVoiceId, hasCamera, bubblePosition, bubbleSize, bubbleShape, bubbleVisibility]);
+  }, [videoId, visualSelections, editedWords, storeTranscript, clonedVoiceId, hasCamera, bubblePosition, bubbleSize, bubbleShape, bubbleVisibility, segments, deletions]);
 
   // Handle saving preview to permanent storage
   const handleSavePreview = useCallback(async () => {
@@ -984,6 +1090,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
         onWordClick={handleTranscriptWordClick}
         onEditWord={handleTranscriptEdit}
       />
+
     </div>
   );
 }

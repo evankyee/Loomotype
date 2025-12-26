@@ -270,6 +270,41 @@ class ApiService {
     }
   }
 
+  // ========== Filler/Silence Detection ==========
+
+  async detectFillers(videoId: string): Promise<{
+    fillers: Array<{
+      id: string;
+      type: 'filler' | 'silence';
+      text: string;
+      start: number;
+      end: number;
+    }>;
+  }> {
+    return this.request<{
+      fillers: Array<{
+        id: string;
+        type: 'filler' | 'silence';
+        text: string;
+        start: number;
+        end: number;
+      }>;
+    }>(`/videos/${videoId}/detect-fillers`);
+  }
+
+  async applyDeletions(videoId: string, deletions: Array<{
+    startTime: number;
+    endTime: number;
+  }>): Promise<{ output_url: string; job_id: string }> {
+    return this.request<{ output_url: string; job_id: string }>(
+      `/videos/${videoId}/apply-deletions`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ deletions }),
+      }
+    );
+  }
+
   // ========== Vision Analysis (Google Vision API) ==========
 
   async analyzeVideo(videoId: string, interval: number = 2.0): Promise<AnalysisResponse> {
@@ -578,7 +613,20 @@ class ApiService {
       original_text?: string;
     }>,
     defaultVoiceId?: string,
-    bubbleSettings?: BubbleSettings
+    bubbleSettings?: BubbleSettings,
+    deletions?: Array<{
+      start_time: number;
+      end_time: number;
+    }>,
+    segments?: Array<{
+      id: string;
+      original_start: number;
+      original_end: number;
+      trim_start: number;
+      trim_end: number;
+      output_start: number;
+      order: number;
+    }>
   ): Promise<{ job_id: string; status: string; progress: number }> {
     return this.request('/personalize', {
       method: 'POST',
@@ -588,6 +636,8 @@ class ApiService {
         visual_replacements: visualReplacements,
         voice_id: defaultVoiceId,
         bubble_settings: bubbleSettings,
+        deletions: deletions,
+        segments: segments,
       }),
     });
   }

@@ -2373,6 +2373,23 @@ class VisualReplacement(BaseModel):
     original_text: Optional[str] = None  # For logging
 
 
+class DeletionSegment(BaseModel):
+    """A segment to delete/cut from video."""
+    start_time: float
+    end_time: float
+
+
+class TimelineSegment(BaseModel):
+    """A timeline segment for split/reorder/trim editing."""
+    id: str
+    original_start: float  # Start time in original video
+    original_end: float    # End time in original video
+    trim_start: float = 0  # Trim offset from start
+    trim_end: float = 0    # Trim offset from end
+    output_start: float = 0  # Position on output timeline (for gaps/ordering)
+    order: int = 0         # Legacy display order (use output_start instead)
+
+
 class FullPersonalizationRequest(BaseModel):
     """Complete personalization request."""
     video_id: str
@@ -2380,6 +2397,8 @@ class FullPersonalizationRequest(BaseModel):
     visual_replacements: list[VisualReplacement] = []
     voice_id: Optional[str] = None  # Default voice for all edits
     bubble_settings: Optional[BubbleSettings] = None  # Camera bubble position/size/shape/visibility
+    deletions: Optional[list[DeletionSegment]] = None  # Segments to cut from video
+    segments: Optional[list[TimelineSegment]] = None  # Timeline segments (for split/reorder)
 
 
 @app.post("/api/personalize")
@@ -2459,6 +2478,157 @@ async def process_full_personalization(
             logger.info("[SINGLE RECORDING] No separate camera file, will extract face from screen recording")
             camera_path = None
 
+        # Track processed segments for deletion timestamp adjustment
+        processed_segments = []
+
+        # Timestamp mapping from segment processing (original time -> new time)
+        # Each entry: {"original_start", "original_end", "new_start", "new_end"}
+        segment_time_mapping = []
+
+        # Step 0: Apply segment edits FIRST (split/reorder/trim)
+        # CRITICAL: This must happen BEFORE any other processing because segments
+        # use timestamps from the ORIGINAL video. If we process segments after
+        # voice edits or visual replacements, the timestamps would be wrong.
+        if request.segments and len(request.segments) > 0:
+            logger.info(f"[SEGMENTS] Step 0: Processing {len(request.segments)} segments from ORIGINAL video")
+            for seg in request.segments:
+                logger.info(f"[SEGMENTS] Received segment: id={seg.id}, original={seg.original_start:.2f}-{seg.original_end:.2f}, trim={seg.trim_start:.2f}/{seg.trim_end:.2f}, output_start={seg.output_start:.2f}")
+            jobs_store[job_id]["progress"] = 3
+
+            # Sort segments by output_start (position on timeline)
+            ordered_segments = sorted(request.segments, key=lambda s: s.output_start)
+
+            # Extract each segment with its trim applied from ORIGINAL video
+            segment_files = []
+            for i, seg in enumerate(ordered_segments):
+                # Calculate actual start/end with trims
+                seg_start = seg.original_start + seg.trim_start
+                seg_end = seg.original_end - seg.trim_end
+                seg_duration = seg_end - seg_start
+
+                if seg_duration <= 0.1:
+                    logger.warning(f"[SEGMENTS] Skipping segment {seg.id} - too short ({seg_duration:.2f}s)")
+                    continue
+
+                # Extract segment to temp file from ORIGINAL video_path
+                seg_output = OUTPUT_DIR / f"seg_{job_id}_{i}.mp4"
+
+                # Use FFmpeg to extract segment
+                subprocess.run([
+                    "ffmpeg", "-y",
+                    "-ss", str(seg_start),
+                    "-t", str(seg_duration),
+                    "-i", str(video_path),  # Use ORIGINAL video, not current_video
+                    "-c", "copy",
+                    "-avoid_negative_ts", "make_zero",
+                    str(seg_output)
+                ], capture_output=True, check=True)
+
+                segment_files.append(seg_output)
+                temp_files.append(seg_output)
+                logger.info(f"[SEGMENTS] Extracted segment {i+1}/{len(ordered_segments)}: {seg_start:.2f}s - {seg_end:.2f}s")
+
+            # Concatenate segments in order
+            if len(segment_files) > 1:
+                segments_output = OUTPUT_DIR / f"segments_{job_id}.mp4"
+
+                # Create concat file
+                concat_file = OUTPUT_DIR / f"concat_{job_id}.txt"
+                with open(concat_file, "w") as f:
+                    for seg_file in segment_files:
+                        f.write(f"file '{seg_file}'\n")
+
+                # Concatenate segments
+                subprocess.run([
+                    "ffmpeg", "-y",
+                    "-f", "concat",
+                    "-safe", "0",
+                    "-i", str(concat_file),
+                    "-c", "copy",
+                    str(segments_output)
+                ], capture_output=True, check=True)
+
+                current_video = segments_output
+                temp_files.append(segments_output)
+                concat_file.unlink()  # Clean up concat file
+                logger.info(f"[SEGMENTS] Concatenated {len(segment_files)} segments -> {current_video}")
+            elif len(segment_files) == 1:
+                current_video = segment_files[0]
+                logger.info(f"[SEGMENTS] Single segment - using {current_video}")
+            else:
+                logger.warning("[SEGMENTS] No valid segments extracted, using original video")
+
+            # Build timestamp mapping for original -> new time conversion
+            # This is CRITICAL for voice edits, visual replacements, and bubble visibility
+            # which still reference original video timestamps
+            if segment_files:
+                cumulative_duration = 0.0
+                for i, seg in enumerate(ordered_segments):
+                    seg_start = seg.original_start + seg.trim_start
+                    seg_end = seg.original_end - seg.trim_end
+                    seg_duration = seg_end - seg_start
+                    if seg_duration > 0.1:  # Only include valid segments
+                        segment_time_mapping.append({
+                            "original_start": seg_start,
+                            "original_end": seg_end,
+                            "new_start": cumulative_duration,
+                            "new_end": cumulative_duration + seg_duration,
+                        })
+                        cumulative_duration += seg_duration
+
+                logger.info(f"[SEGMENTS] Built timestamp mapping with {len(segment_time_mapping)} entries")
+                for m in segment_time_mapping:
+                    logger.info(f"[SEGMENTS]   Original {m['original_start']:.2f}-{m['original_end']:.2f} -> New {m['new_start']:.2f}-{m['new_end']:.2f}")
+
+        # Helper function to map original timestamp to new timestamp after segment processing
+        def map_original_to_new_time(original_time: float) -> float | None:
+            """
+            Convert a timestamp from the original video to the new (post-segment) video.
+            Returns None if the timestamp falls in a trimmed/deleted region.
+            """
+            if not segment_time_mapping:
+                return original_time  # No segment processing, timestamps unchanged
+
+            for mapping in segment_time_mapping:
+                if mapping["original_start"] <= original_time <= mapping["original_end"]:
+                    # Found the segment containing this time
+                    offset_in_segment = original_time - mapping["original_start"]
+                    return mapping["new_start"] + offset_in_segment
+
+            # Time falls outside all segments (was trimmed out)
+            return None
+
+        def map_original_range_to_new(start: float, end: float) -> tuple[float, float] | None:
+            """
+            Map a time range from original to new timeline.
+            Returns None if the range is entirely trimmed out.
+            Clips the range to valid segments if partially trimmed.
+            """
+            if not segment_time_mapping:
+                return (start, end)  # No segment processing
+
+            new_start = None
+            new_end = None
+
+            for mapping in segment_time_mapping:
+                # Check if ranges overlap
+                overlap_start = max(start, mapping["original_start"])
+                overlap_end = min(end, mapping["original_end"])
+
+                if overlap_start < overlap_end:
+                    # There's an overlap - map it
+                    mapped_start = mapping["new_start"] + (overlap_start - mapping["original_start"])
+                    mapped_end = mapping["new_start"] + (overlap_end - mapping["original_start"])
+
+                    if new_start is None or mapped_start < new_start:
+                        new_start = mapped_start
+                    if new_end is None or mapped_end > new_end:
+                        new_end = mapped_end
+
+            if new_start is not None and new_end is not None:
+                return (new_start, new_end)
+            return None
+
         # Step 1: Process voice edits with lip-sync
         if request.voice_edits:
             logger.info(f"Processing {len(request.voice_edits)} voice edits")
@@ -2473,8 +2643,6 @@ async def process_full_personalization(
             # Use Sync Labs for lip-sync
             lipsync_engine = LipSyncEngine(backend="synclabs")
             logger.info("Using SyncLabs for lip-sync")
-
-            processed_segments = []
 
             # ================================================================
             # REQUEST STITCHING: Track request_ids for prosody continuity
@@ -2492,6 +2660,20 @@ async def process_full_personalization(
                 if not voice_id:
                     logger.warning(f"No voice ID for edit {orig_i}, skipping")
                     continue
+
+                # ================================================================
+                # TIMESTAMP REMAPPING: Convert original timestamps to new timeline
+                # This is CRITICAL when segment processing (split/trim/delete) was applied
+                # ================================================================
+                edit_start = edit.start_time
+                edit_end = edit.end_time
+                if segment_time_mapping:
+                    mapped_range = map_original_range_to_new(edit.start_time, edit.end_time)
+                    if mapped_range is None:
+                        logger.warning(f"Voice edit {orig_i+1} at {edit.start_time:.2f}-{edit.end_time:.2f} falls in trimmed region, skipping")
+                        continue
+                    edit_start, edit_end = mapped_range
+                    logger.info(f"[SEGMENTS] Remapped voice edit: {edit.start_time:.2f}-{edit.end_time:.2f} -> {edit_start:.2f}-{edit_end:.2f}")
 
                 progress = 10 + int(40 * (orig_i / len(request.voice_edits)))
                 jobs_store[job_id]["progress"] = progress
@@ -2571,12 +2753,14 @@ async def process_full_personalization(
                 temp_files.append(audio_path)
 
                 # Extract original audio segment FIRST - needed for both pitch matching and loudness
+                # NOTE: Use edit_start (remapped) when extracting from current_video (segmented)
                 from ..core.ffmpeg_utils import FFmpegProcessor
                 original_audio_segment = OUTPUT_DIR / f"original_audio_{job_id}_{orig_i}.wav"
+                remapped_segment_duration = edit_end - edit_start
                 run_ffmpeg([
-                    "-ss", str(edit.start_time),
+                    "-ss", str(edit_start),
                     "-i", str(current_video),
-                    "-t", str(original_segment_duration),
+                    "-t", str(remapped_segment_duration),
                     "-vn",  # No video
                     "-acodec", "pcm_s16le",
                     "-ar", "44100",  # Match ElevenLabs source rate
@@ -2700,19 +2884,20 @@ async def process_full_personalization(
                     temp_files.append(normalized_camera)
                     logger.info(f"[DUAL RECORDING] Normalized lipsync audio: 44100Hz -> 48000Hz")
 
-                    new_end_time = edit.start_time + actual_lipsync_duration
+                    # Use REMAPPED timestamps for segment entry (aligns with segmented video)
+                    new_end_time = edit_start + actual_lipsync_duration
 
                     # Store as camera segment for later overlay
                     segment_entry = {
                         "video_path": normalized_camera,
-                        "start_time": edit.start_time,
+                        "start_time": edit_start,  # Remapped to new timeline
                         "end_time": new_end_time,
-                        "original_end_time": edit.end_time,
+                        "original_end_time": edit_end,  # Remapped original end
                         "is_camera_segment": True,  # Flag for overlay processing
                     }
                     processed_segments.append(segment_entry)
 
-                    logger.info(f"[DUAL RECORDING] Camera segment ready for overlay: {edit.start_time:.2f}s - {new_end_time:.2f}s")
+                    logger.info(f"[DUAL RECORDING] Camera segment ready for overlay: {edit_start:.2f}s - {new_end_time:.2f}s")
 
                 # ================================================================
                 # EMBEDDED BUBBLE PATH: Camera bubble is IN the screen recording
@@ -2725,14 +2910,16 @@ async def process_full_personalization(
                     bubble_padding = video_metadata.get("bubble_padding", 30)
                     bubble_position = video_metadata.get("bubble_position", "bottom-left")
 
-                    # Extract the video segment
+                    # Extract the video segment (use REMAPPED timestamps for current_video)
                     segment_path = OUTPUT_DIR / f"segment_{job_id}_{orig_i}.mp4"
-                    extract_end = edit.start_time + max(audio_duration, original_segment_duration) + 0.5
-                    extract_end = min(extract_end, info.duration)
+                    extract_end = edit_start + max(audio_duration, remapped_segment_duration) + 0.5
+                    # Get current video duration for boundary check
+                    current_video_info = get_video_info(current_video)
+                    extract_end = min(extract_end, current_video_info.duration)
 
                     FFmpegProcessor.extract_segment(
                         video_path=current_video,
-                        start_time=edit.start_time,
+                        start_time=edit_start,  # Remapped timestamp
                         end_time=extract_end,
                         output_path=segment_path,
                         reencode=True,
@@ -2779,17 +2966,18 @@ async def process_full_personalization(
                     )
                     temp_files.append(final_segment)
 
-                    new_end_time = edit.start_time + actual_duration
+                    # Use REMAPPED timestamps for segment entry
+                    new_end_time = edit_start + actual_duration
 
                     segment_entry = {
                         "video_path": str(final_segment),
-                        "start_time": edit.start_time,
+                        "start_time": edit_start,  # Remapped timestamp
                         "end_time": new_end_time,
-                        "original_end_time": edit.end_time,
+                        "original_end_time": edit_end,  # Remapped original end
                     }
                     processed_segments.append(segment_entry)
 
-                    logger.info(f"[EMBEDDED BUBBLE] Segment ready: {edit.start_time:.2f}s - {new_end_time:.2f}s")
+                    logger.info(f"[EMBEDDED BUBBLE] Segment ready: {edit_start:.2f}s - {new_end_time:.2f}s")
 
                 # ================================================================
                 # SINGLE RECORDING PATH: Extract from screen, upscale if needed
@@ -2797,15 +2985,18 @@ async def process_full_personalization(
                 else:
                     # Extract video segment - extend/shrink to match audio duration
                     # This is the key: video adjusts to audio, not audio to video
+                    # Use REMAPPED timestamps for current_video (segmented)
                     video_segment_path = OUTPUT_DIR / f"video_segment_{job_id}_{orig_i}.mp4"
 
                     # Extract slightly more video if audio is longer
-                    extract_end = edit.start_time + max(audio_duration, original_segment_duration) + 0.5
-                    extract_end = min(extract_end, info.duration)  # Don't exceed video length
+                    extract_end = edit_start + max(audio_duration, remapped_segment_duration) + 0.5
+                    # Get current video duration for boundary check
+                    current_video_info = get_video_info(current_video)
+                    extract_end = min(extract_end, current_video_info.duration)
 
                     FFmpegProcessor.extract_segment(
                         video_path=current_video,
-                        start_time=edit.start_time,
+                        start_time=edit_start,  # Remapped timestamp
                         end_time=extract_end,
                         output_path=video_segment_path,
                         reencode=True,
@@ -2893,18 +3084,19 @@ async def process_full_personalization(
 
                     # The new segment duration is based on the actual lip-synced output
                     # This should match the audio duration since Sync Labs syncs to the audio
-                    new_end_time = edit.start_time + actual_lipsync_duration
+                    # Use REMAPPED timestamps for segment entry
+                    new_end_time = edit_start + actual_lipsync_duration
 
                     segment_entry = {
                         "video_path": lipsync_output,
-                        "start_time": edit.start_time,
+                        "start_time": edit_start,  # Remapped timestamp
                         "end_time": new_end_time,  # Use audio-based timing
-                        "original_end_time": edit.end_time,  # Track original for composition
+                        "original_end_time": edit_end,  # Remapped original end
                         "is_camera_segment": False,
                     }
                     processed_segments.append(segment_entry)
 
-                    logger.info(f"[LIP-SYNC DEBUG] Segment entry: start={edit.start_time:.2f}s, end={new_end_time:.2f}s, original_end={edit.end_time:.2f}s")
+                    logger.info(f"[LIP-SYNC DEBUG] Segment entry: start={edit_start:.2f}s, end={new_end_time:.2f}s, original_end={edit_end:.2f}s")
                     logger.info(f"[LIP-SYNC DEBUG] Segment video path: {lipsync_output}")
 
             # Compose video with lip-synced segments
@@ -3164,6 +3356,20 @@ async def process_full_personalization(
             for i, repl in enumerate(request.visual_replacements):
                 segment_id = f"visual_{i}"
 
+                # ================================================================
+                # TIMESTAMP REMAPPING: Convert original timestamps to new timeline
+                # This is CRITICAL when segment processing (split/trim/delete) was applied
+                # ================================================================
+                repl_start = repl.start_time
+                repl_end = repl.end_time
+                if segment_time_mapping:
+                    mapped_range = map_original_range_to_new(repl.start_time, repl.end_time)
+                    if mapped_range is None:
+                        logger.warning(f"Visual replacement {i} at {repl.start_time:.2f}-{repl.end_time:.2f} falls in trimmed region, skipping")
+                        continue
+                    repl_start, repl_end = mapped_range
+                    logger.info(f"[SEGMENTS] Remapped visual replacement: {repl.start_time:.2f}-{repl.end_time:.2f} -> {repl_start:.2f}-{repl_end:.2f}")
+
                 # Convert percentage (0-100) to normalized (0-1) and clamp to valid range
                 bbox = BoundingBox(
                     x=max(0, min(1, repl.x / 100)),
@@ -3174,12 +3380,12 @@ async def process_full_personalization(
                 # Ensure box doesn't extend beyond frame bounds
                 bbox = bbox.clamp()
 
-                # Track if requested
+                # Track if requested (use REMAPPED timestamps)
                 tracking_ref = None
                 if repl.enable_tracking:
                     logger.info(f"Tracking visual element {i}")
-                    start_frame = int(repl.start_time * fps)
-                    end_frame = int(repl.end_time * fps)
+                    start_frame = int(repl_start * fps)
+                    end_frame = int(repl_end * fps)
 
                     tracked = tracker.track_region(
                         video_path=current_video,
@@ -3193,8 +3399,8 @@ async def process_full_personalization(
                 segment = VisualSegment(
                     id=segment_id,
                     segment_type=SegmentType.TEXT if repl.replacement_type == "text" else SegmentType.IMAGE,
-                    start_time=repl.start_time,
-                    end_time=repl.end_time,
+                    start_time=repl_start,  # Remapped timestamp
+                    end_time=repl_end,  # Remapped timestamp
                     x=bbox.x,
                     y=bbox.y,
                     width=bbox.width,
@@ -3285,10 +3491,21 @@ async def process_full_personalization(
                 if request.bubble_settings.visibility:
                     # Build FFmpeg enable expression for hiding bubble during specified segments
                     # visibility.visible=False means HIDE during that time
+                    # TIMESTAMP REMAPPING: Convert original timestamps to new timeline
                     hide_conditions = []
                     for seg in request.bubble_settings.visibility:
                         if not seg.visible:
-                            hide_conditions.append(f"between(t,{seg.start},{seg.end})")
+                            # Remap visibility timestamps if segment processing occurred
+                            vis_start = seg.start
+                            vis_end = seg.end
+                            if segment_time_mapping:
+                                mapped_range = map_original_range_to_new(seg.start, seg.end)
+                                if mapped_range is None:
+                                    logger.warning(f"Bubble visibility {seg.start:.2f}-{seg.end:.2f} falls in trimmed region, skipping")
+                                    continue
+                                vis_start, vis_end = mapped_range
+                                logger.info(f"[SEGMENTS] Remapped bubble visibility: {seg.start:.2f}-{seg.end:.2f} -> {vis_start:.2f}-{vis_end:.2f}")
+                            hide_conditions.append(f"between(t,{vis_start},{vis_end})")
                     if hide_conditions:
                         # Enable when NOT in any hide segment
                         visibility_filter = f"not({'+'.join(hide_conditions)})"
@@ -3332,7 +3549,74 @@ async def process_full_personalization(
             current_video = bubble_output
             temp_files.append(bubble_output)
 
-        # Step 4: Final output
+        # Step 4: Apply deletions (remove segments)
+        # NOTE: Deletions need TWO adjustments:
+        # 1. Remap from original timeline to post-segment timeline (if segment processing occurred)
+        # 2. Adjust for voice edit duration changes (TTS audio can be longer/shorter)
+        if request.deletions and len(request.deletions) > 0:
+            logger.info(f"[DELETIONS] Applying {len(request.deletions)} cuts to video")
+            jobs_store[job_id]["progress"] = 92
+
+            # Calculate time offset caused by voice edits (if any)
+            # Each voice edit may have changed duration: new_duration - original_duration
+            time_adjustments = []  # List of (original_time, adjustment) - cumulative offsets
+            if request.voice_edits and processed_segments:
+                cumulative_offset = 0.0
+                for seg in sorted(processed_segments, key=lambda s: s.get("start_time", 0)):
+                    orig_duration = seg.get("original_end_time", seg["end_time"]) - seg["start_time"]
+                    new_duration = seg["end_time"] - seg["start_time"]
+                    duration_change = new_duration - orig_duration
+                    cumulative_offset += duration_change
+                    time_adjustments.append((seg.get("original_end_time", seg["end_time"]), cumulative_offset))
+                    if abs(duration_change) > 0.1:
+                        logger.info(f"[DELETIONS] Voice edit at {seg['start_time']:.2f}s changed duration by {duration_change:+.2f}s")
+
+            # Adjust deletion timestamps
+            adjusted_cuts = []
+            for d in request.deletions:
+                start = d.start_time
+                end = d.end_time
+
+                # Step 1: Remap from original timeline to post-segment timeline
+                if segment_time_mapping:
+                    mapped_range = map_original_range_to_new(start, end)
+                    if mapped_range is None:
+                        logger.warning(f"[DELETIONS] Cut {start:.2f}-{end:.2f}s falls in already trimmed region, skipping")
+                        continue
+                    mapped_start, mapped_end = mapped_range
+                    logger.info(f"[DELETIONS] Remapped from segment processing: {start:.2f}-{end:.2f}s → {mapped_start:.2f}-{mapped_end:.2f}s")
+                    start, end = mapped_start, mapped_end
+
+                # Step 2: Find cumulative offset at this deletion's time (voice edit adjustments)
+                offset = 0.0
+                for orig_time, adj in time_adjustments:
+                    if orig_time <= start:
+                        offset = adj
+                    else:
+                        break
+
+                adjusted_start = start + offset
+                adjusted_end = end + offset
+
+                if abs(offset) > 0.1:
+                    logger.info(f"[DELETIONS] Adjusted for voice edits: {start:.2f}-{end:.2f}s → {adjusted_start:.2f}-{adjusted_end:.2f}s (offset: {offset:+.2f}s)")
+
+                adjusted_cuts.append({"start": adjusted_start, "end": adjusted_end})
+
+            deletions_output = OUTPUT_DIR / f"deleted_{job_id}.mp4"
+
+            FFmpegProcessor.remove_segments(
+                video_path=current_video,
+                output_path=deletions_output,
+                cuts=adjusted_cuts,
+                crossfade_ms=100,  # Smooth audio transitions at cut points
+            )
+
+            current_video = deletions_output
+            temp_files.append(deletions_output)
+            logger.info(f"[DELETIONS] Applied {len(adjusted_cuts)} cuts successfully")
+
+        # Step 5: Final output
         jobs_store[job_id]["progress"] = 95
 
         # Copy to final output path
@@ -3682,6 +3966,153 @@ async def process_remove_fillers_job(
         logger.exception("Filler removal failed")
         jobs_store[job_id]["status"] = "failed"
         jobs_store[job_id]["error"] = str(e)
+
+
+# ============================================================================
+# Generic Deletions (for word deletion, manual cuts, etc.)
+# ============================================================================
+
+class DeletionItem(BaseModel):
+    """A single deletion/cut to apply."""
+    startTime: float  # Alias for start
+    endTime: float    # Alias for end
+
+
+class ApplyDeletionsRequest(BaseModel):
+    """Request to apply deletions to video."""
+    deletions: list[DeletionItem]
+
+
+@app.post("/api/videos/{video_id}/apply-deletions")
+async def apply_deletions(
+    video_id: str,
+    request: ApplyDeletionsRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Apply arbitrary deletions (cuts) to video.
+
+    Used for word deletion, manual cuts, or any time-range removal.
+    Returns a job that processes the video with FFmpeg.
+    """
+    if video_id not in videos_store:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video = videos_store[video_id]
+    video_path = Path(video["path"])
+
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    if not request.deletions:
+        raise HTTPException(status_code=400, detail="No deletions provided")
+
+    # Create job
+    job_id = str(uuid.uuid4())[:8]
+    output_path = OUTPUT_DIR / f"edited_{job_id}.mp4"
+
+    jobs_store[job_id] = {
+        "job_id": job_id,
+        "video_id": video_id,
+        "type": "apply_deletions",
+        "status": "pending",
+        "progress": 0,
+        "output_url": None,
+        "error": None,
+        "created_at": datetime.now().isoformat(),
+        "deletion_count": len(request.deletions),
+    }
+
+    # Convert to cuts format
+    cuts = [{"start": d.startTime, "end": d.endTime} for d in request.deletions]
+
+    # Start background processing
+    background_tasks.add_task(
+        process_deletions_job,
+        job_id,
+        video_path,
+        output_path,
+        cuts,
+    )
+
+    return {
+        "job_id": job_id,
+        "status": "pending",
+        "progress": 0,
+        "output_url": f"/api/render/{job_id}/download",
+        "deletion_count": len(cuts),
+    }
+
+
+async def process_deletions_job(
+    job_id: str,
+    video_path: Path,
+    output_path: Path,
+    cuts: list[dict],
+):
+    """Background task to apply deletions to video."""
+    try:
+        jobs_store[job_id]["status"] = "processing"
+        jobs_store[job_id]["progress"] = 10
+
+        logger.info(f"[{job_id}] Applying {len(cuts)} deletions to video")
+        jobs_store[job_id]["progress"] = 20
+
+        FFmpegProcessor.remove_segments(
+            video_path=video_path,
+            output_path=output_path,
+            cuts=cuts,
+            crossfade_ms=100,  # Smooth audio transitions
+        )
+
+        jobs_store[job_id]["progress"] = 100
+        jobs_store[job_id]["status"] = "completed"
+        jobs_store[job_id]["output_url"] = f"/api/render/{job_id}/download"
+        jobs_store[job_id]["output_path"] = str(output_path)
+
+        logger.info(f"[{job_id}] Deletions applied: {output_path}")
+
+    except Exception as e:
+        logger.exception(f"[{job_id}] Deletions failed")
+        jobs_store[job_id]["status"] = "failed"
+        jobs_store[job_id]["error"] = str(e)
+
+
+# ============================================================================
+# Waveform Generation
+# ============================================================================
+
+@app.get("/api/videos/{video_id}/waveform")
+async def get_waveform(video_id: str, samples: int = 120):
+    """
+    Generate audio waveform data for timeline visualization.
+    Returns array of amplitude values (0-1) for rendering waveform bars.
+    """
+    if video_id not in videos_store:
+        raise HTTPException(status_code=404, detail="Video not found")
+
+    video = videos_store[video_id]
+    video_path = Path(video["path"])
+
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+
+    # Check cache first
+    if "waveform" in video and len(video["waveform"]) == samples:
+        return {"waveform": video["waveform"]}
+
+    # For now, return placeholder - real waveform requires more processing
+    # TODO: Implement fast waveform extraction using FFmpeg
+    import math
+    waveform = []
+    for i in range(samples):
+        base = math.sin(i * 0.15) * 0.3 + 0.5
+        noise = math.sin(i * 0.7) * 0.15 + math.sin(i * 1.3) * 0.1
+        waveform.append(max(0.15, min(0.85, base + noise)))
+
+    video["waveform"] = waveform
+    videos_store[video_id] = video
+    return {"waveform": waveform}
 
 
 # ============================================================================

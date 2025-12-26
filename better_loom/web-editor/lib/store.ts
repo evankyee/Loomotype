@@ -45,6 +45,37 @@ export interface TranscriptEdit {
   generatedAudioUrl?: string;
 }
 
+// Deletion edit - marks a time range for removal
+export interface DeletionEdit {
+  id: string;
+  startTime: number;
+  endTime: number;
+  reason: 'manual' | 'filler' | 'silence';
+  wordIds?: string[];  // For word-based deletions
+  text?: string;       // What was deleted (for UI display)
+}
+
+// Detected filler/silence item from backend
+export interface DetectedFiller {
+  id: string;
+  type: 'filler' | 'silence';
+  text: string;
+  start: number;
+  end: number;
+}
+
+// Timeline segment for split/reorder editing
+export interface TimelineSegment {
+  id: string;
+  originalStart: number;  // Start time in original video
+  originalEnd: number;    // End time in original video
+  trimStart: number;      // Trim offset from start (0 = no trim)
+  trimEnd: number;        // Trim offset from end (0 = no trim)
+  outputStart: number;    // Position on output timeline (for dragging/gaps)
+  order: number;          // Display order (for reordering)
+  isDeleted: boolean;     // Soft delete
+}
+
 interface EditorState {
   // Video state
   videoUrl: string | null;
@@ -61,6 +92,14 @@ interface EditorState {
   transcriptEdits: TranscriptEdit[];
   isTranscribing: boolean;
   transcribeError: string | null;
+
+  // Deletion state (non-destructive editing)
+  deletions: DeletionEdit[];
+  detectedFillers: DetectedFiller[];
+  isDetectingFillers: boolean;
+
+  // Timeline segments (for split/reorder editing)
+  segments: TimelineSegment[];
 
   // Visual selection state
   visualSelections: VisualSelection[];
@@ -97,6 +136,24 @@ interface EditorState {
   updateTranscriptEdit: (id: string, updates: Partial<TranscriptEdit>) => void;
   removeTranscriptEdit: (id: string) => void;
   generateEditedAudio: (editId: string) => Promise<void>;
+
+  // Deletion actions (non-destructive editing)
+  addDeletion: (deletion: Omit<DeletionEdit, 'id'>) => string;
+  removeDeletion: (id: string) => void;
+  clearDeletions: () => void;
+  detectFillers: () => Promise<void>;
+  applyFillerDeletions: (fillerIds: string[]) => void;
+  clearDetectedFillers: () => void;
+
+  // Segment actions (split/reorder/trim)
+  initializeSegments: (duration: number) => void;
+  splitAtTime: (time: number) => void;
+  deleteSegment: (segmentId: string) => void;
+  restoreSegment: (segmentId: string) => void;
+  reorderSegments: (segmentId: string, newOrder: number) => void;
+  trimSegment: (segmentId: string, trimStart: number, trimEnd: number) => void;
+  moveSegment: (segmentId: string, newOutputStart: number) => void;
+  getOrderedSegments: () => TimelineSegment[];
 
   // Visual selection actions
   addVisualSelection: (selection: Omit<VisualSelection, 'id'>) => string;
@@ -135,6 +192,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   isTranscribing: false,
   transcribeError: null,
 
+  deletions: [],
+  detectedFillers: [],
+  isDetectingFillers: false,
+
+  segments: [],
+
   visualSelections: [],
   selectedSelectionId: null,
   selectionMode: 'none',
@@ -162,6 +225,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       trimStart: 0,
       transcript: null,
       transcriptEdits: [],
+      deletions: [],
+      detectedFillers: [],
       visualSelections: [],
       analysis: null,
     });
@@ -291,6 +356,204 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         ),
       }));
     }
+  },
+
+  // Deletion actions (non-destructive editing)
+  addDeletion: (deletion) => {
+    const id = `deletion-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    set(state => ({
+      deletions: [...state.deletions, { ...deletion, id }].sort((a, b) => a.startTime - b.startTime),
+    }));
+    return id;
+  },
+
+  removeDeletion: (id) => set(state => ({
+    deletions: state.deletions.filter(d => d.id !== id),
+  })),
+
+  clearDeletions: () => set({ deletions: [] }),
+
+  detectFillers: async () => {
+    const { videoId } = get();
+    if (!videoId) return;
+
+    set({ isDetectingFillers: true });
+    try {
+      const result = await api.detectFillers(videoId);
+      set({ detectedFillers: result.fillers, isDetectingFillers: false });
+    } catch (error) {
+      console.error('Filler detection failed:', error);
+      set({ isDetectingFillers: false });
+    }
+  },
+
+  applyFillerDeletions: (fillerIds) => {
+    const { detectedFillers, deletions } = get();
+    const fillersToDelete = detectedFillers.filter(f => fillerIds.includes(f.id));
+
+    const newDeletions = fillersToDelete.map(f => ({
+      id: `deletion-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      startTime: f.start,
+      endTime: f.end,
+      reason: f.type as 'filler' | 'silence',
+      text: f.text,
+    }));
+
+    set({
+      deletions: [...deletions, ...newDeletions].sort((a, b) => a.startTime - b.startTime),
+      detectedFillers: [],
+    });
+  },
+
+  clearDetectedFillers: () => set({ detectedFillers: [] }),
+
+  // Segment actions (split/reorder/trim)
+  initializeSegments: (duration: number) => {
+    // Create single segment spanning entire video
+    if (duration > 0) {
+      set({
+        segments: [{
+          id: `seg-${Date.now()}`,
+          originalStart: 0,
+          originalEnd: duration,
+          trimStart: 0,
+          trimEnd: 0,
+          outputStart: 0,  // Starts at beginning of output timeline
+          order: 0,
+          isDeleted: false,
+        }],
+      });
+    }
+  },
+
+  splitAtTime: (time: number) => {
+    const { segments, duration } = get();
+    console.log('[Store] splitAtTime called:', { time, duration, segmentsCount: segments.length });
+
+    if (time <= 0.1 || time >= duration - 0.1) {
+      console.log('[Store] Split rejected: time too close to edges');
+      return;
+    }
+
+    // Find the segment that contains this time
+    const segmentIndex = segments.findIndex(seg => {
+      const effectiveStart = seg.originalStart + seg.trimStart;
+      const effectiveEnd = seg.originalEnd - seg.trimEnd;
+      const contains = !seg.isDeleted && time >= effectiveStart && time <= effectiveEnd;
+      console.log('[Store] Checking segment:', {
+        id: seg.id,
+        effectiveStart,
+        effectiveEnd,
+        time,
+        contains,
+        isDeleted: seg.isDeleted
+      });
+      return contains;
+    });
+
+    console.log('[Store] Found segment index:', segmentIndex);
+    if (segmentIndex === -1) return;
+
+    const segment = segments[segmentIndex];
+    const newSegments = [...segments];
+
+    // Create two new segments from the split
+    // Calculate where this segment was on the output timeline
+    const segmentOutputStart = segment.outputStart || 0;
+    const leftDuration = time - segment.originalStart - segment.trimStart;
+
+    const leftSegment: TimelineSegment = {
+      id: `seg-${Date.now()}-l`,
+      originalStart: segment.originalStart,
+      originalEnd: time,
+      trimStart: segment.trimStart,
+      trimEnd: 0,
+      outputStart: segmentOutputStart,
+      order: segment.order,
+      isDeleted: false,
+    };
+
+    const rightSegment: TimelineSegment = {
+      id: `seg-${Date.now()}-r`,
+      originalStart: time,
+      originalEnd: segment.originalEnd,
+      trimStart: 0,
+      trimEnd: segment.trimEnd,
+      outputStart: segmentOutputStart + leftDuration,  // Right after left segment
+      order: segment.order + 0.5, // Will be renumbered
+      isDeleted: false,
+    };
+
+    // Replace the original segment with two new ones
+    newSegments.splice(segmentIndex, 1, leftSegment, rightSegment);
+
+    // Renumber orders
+    const sortedSegments = newSegments
+      .sort((a, b) => a.order - b.order)
+      .map((seg, i) => ({ ...seg, order: i }));
+
+    set({ segments: sortedSegments });
+  },
+
+  deleteSegment: (segmentId: string) => {
+    set(state => ({
+      segments: state.segments.map(seg =>
+        seg.id === segmentId ? { ...seg, isDeleted: true } : seg
+      ),
+    }));
+  },
+
+  restoreSegment: (segmentId: string) => {
+    set(state => ({
+      segments: state.segments.map(seg =>
+        seg.id === segmentId ? { ...seg, isDeleted: false } : seg
+      ),
+    }));
+  },
+
+  reorderSegments: (segmentId: string, newOrder: number) => {
+    const { segments } = get();
+    const segmentIndex = segments.findIndex(s => s.id === segmentId);
+    if (segmentIndex === -1) return;
+
+    const segment = segments[segmentIndex];
+    const otherSegments = segments.filter(s => s.id !== segmentId);
+
+    // Insert at new position
+    const reordered = [
+      ...otherSegments.slice(0, newOrder),
+      segment,
+      ...otherSegments.slice(newOrder),
+    ].map((seg, i) => ({ ...seg, order: i }));
+
+    set({ segments: reordered });
+  },
+
+  trimSegment: (segmentId: string, trimStart: number, trimEnd: number) => {
+    set(state => ({
+      segments: state.segments.map(seg =>
+        seg.id === segmentId
+          ? { ...seg, trimStart: Math.max(0, trimStart), trimEnd: Math.max(0, trimEnd) }
+          : seg
+      ),
+    }));
+  },
+
+  moveSegment: (segmentId: string, newOutputStart: number) => {
+    set(state => ({
+      segments: state.segments.map(seg =>
+        seg.id === segmentId
+          ? { ...seg, outputStart: Math.max(0, newOutputStart) }
+          : seg
+      ),
+    }));
+  },
+
+  getOrderedSegments: () => {
+    const { segments } = get();
+    return segments
+      .filter(s => !s.isDeleted)
+      .sort((a, b) => a.order - b.order);
   },
 
   // Visual selection actions

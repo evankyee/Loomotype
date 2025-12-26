@@ -40,6 +40,15 @@ export function TranscriptEditor({
     transcriptEdits,
     addTranscriptEdit,
     generateEditedAudio,
+    // Deletion state
+    deletions,
+    addDeletion,
+    removeDeletion,
+    detectedFillers,
+    isDetectingFillers,
+    detectFillers,
+    applyFillerDeletions,
+    clearDetectedFillers,
   } = useEditorStore();
 
   // Track which words are generating TTS
@@ -154,6 +163,82 @@ export function TranscriptEditor({
     setSelectionStart(null);
   }, []);
 
+  // Helper to check if a word is deleted
+  const isWordDeleted = useCallback((word: TranscriptWord) => {
+    return deletions.some(d =>
+      word.startTime >= d.startTime && word.endTime <= d.endTime
+    );
+  }, [deletions]);
+
+  // Helper to get deletion for a word (to show restore option)
+  const getDeletionForWord = useCallback((word: TranscriptWord) => {
+    return deletions.find(d =>
+      word.startTime >= d.startTime && word.endTime <= d.endTime
+    );
+  }, [deletions]);
+
+  // Delete selected words
+  const deleteSelectedWords = useCallback(() => {
+    if (selectedWords.size === 0) return;
+
+    const wordsToDelete = transcript.filter(w => selectedWords.has(w.id));
+    if (wordsToDelete.length === 0) return;
+
+    // Sort by start time
+    const sortedWords = [...wordsToDelete].sort((a, b) => a.startTime - b.startTime);
+
+    // Group contiguous words into single deletions
+    const groups: TranscriptWord[][] = [];
+    let currentGroup: TranscriptWord[] = [];
+
+    for (const word of sortedWords) {
+      if (currentGroup.length === 0) {
+        currentGroup.push(word);
+      } else {
+        const lastWord = currentGroup[currentGroup.length - 1];
+        // Check if words are contiguous (within 0.3s gap)
+        if (word.startTime - lastWord.endTime < 0.3) {
+          currentGroup.push(word);
+        } else {
+          groups.push(currentGroup);
+          currentGroup = [word];
+        }
+      }
+    }
+    if (currentGroup.length > 0) {
+      groups.push(currentGroup);
+    }
+
+    // Create deletion for each group
+    for (const group of groups) {
+      addDeletion({
+        startTime: group[0].startTime,
+        endTime: group[group.length - 1].endTime,
+        reason: 'manual',
+        wordIds: group.map(w => w.id),
+        text: group.map(w => w.text).join(' '),
+      });
+    }
+
+    setSelectedWords(new Set());
+  }, [selectedWords, transcript, addDeletion]);
+
+  // Keyboard handler for Delete/Backspace
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't handle if editing a word or in an input
+      if (editingWord || (e.target as HTMLElement)?.tagName === 'INPUT') return;
+
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedWords.size > 0) {
+        e.preventDefault();
+        deleteSelectedWords();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedWords, editingWord, deleteSelectedWords]);
+
   const handleReplaceSelected = useCallback(() => {
     if (selectedWords.size === 0) return;
     // This would open a modal to enter replacement text
@@ -239,8 +324,69 @@ export function TranscriptEditor({
         </div>
 
         <div className="flex items-center gap-2">
+          {/* Clean Up button - detects and removes fillers/silence */}
+          <button
+            onClick={() => {
+              if (detectedFillers.length > 0) {
+                // Apply all detected fillers as deletions
+                applyFillerDeletions(detectedFillers.map(f => f.id));
+              } else {
+                // Detect fillers first
+                detectFillers();
+              }
+            }}
+            disabled={isDetectingFillers || !videoId}
+            className="px-3 py-1.5 bg-orange-500 text-white rounded text-sm font-medium hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
+            title="Remove filler words (um, uh) and long silences"
+          >
+            {isDetectingFillers ? (
+              <>
+                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Detecting...
+              </>
+            ) : detectedFillers.length > 0 ? (
+              <>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                Remove {detectedFillers.length} Items
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                </svg>
+                Clean Up
+              </>
+            )}
+          </button>
+
+          {/* Cancel detected fillers */}
+          {detectedFillers.length > 0 && (
+            <button
+              onClick={clearDetectedFillers}
+              className="px-2 py-1.5 text-muted hover:text-foreground text-sm transition-colors"
+              title="Cancel"
+            >
+              ✕
+            </button>
+          )}
+
           {selectedWords.size > 0 && (
             <>
+              <button
+                onClick={deleteSelectedWords}
+                className="px-3 py-1.5 bg-red-500 text-white rounded text-sm font-medium hover:bg-red-600 transition-colors flex items-center gap-1"
+                title="Delete selected words (or press Delete key)"
+              >
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+                Delete
+              </button>
               <button
                 onClick={handleReplaceSelected}
                 className="px-3 py-1.5 bg-accent text-white rounded text-sm font-medium hover:opacity-90 transition-opacity flex items-center gap-1"
@@ -248,18 +394,21 @@ export function TranscriptEditor({
                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
                 </svg>
-                Replace with AI Voice
+                Replace
               </button>
               <button
                 onClick={clearSelection}
-                className="px-3 py-1.5 text-muted hover:text-foreground text-sm transition-colors"
+                className="px-2 py-1.5 text-muted hover:text-foreground text-sm transition-colors"
               >
                 Clear
               </button>
             </>
           )}
           <span className="text-xs text-muted">
-            Click to seek • Double-click to edit • Shift-click to select range
+            {deletions.length > 0
+              ? `${deletions.length} cut${deletions.length !== 1 ? 's' : ''} • `
+              : ''}
+            Select words → Delete
           </span>
         </div>
       </div>
@@ -289,16 +438,26 @@ export function TranscriptEditor({
 
             const isGenerating = generatingWords.has(word.id);
             const editStatus = transcriptEdits.find(e => e.wordIds.includes(word.id));
+            const isDeleted = isWordDeleted(word);
+            const deletion = getDeletionForWord(word);
 
             return (
               <span
                 key={word.id}
                 data-word-id={word.id}
-                onClick={() => onWordClick(word)}
-                onMouseDown={(e) => handleWordMouseDown(word.id, e)}
-                onDoubleClick={() => handleWordDoubleClick(word)}
-                className={`transcript-word ${isActive ? 'active' : ''} ${isSelected ? 'selected' : ''} ${word.isEdited ? 'editable' : ''} ${isGenerating ? 'generating' : ''} ${editStatus?.status === 'complete' ? 'tts-ready' : ''}`}
-                title={isGenerating ? 'Generating AI voice...' : editStatus?.status === 'complete' ? 'AI voice ready' : undefined}
+                onClick={() => {
+                  if (isDeleted && deletion) {
+                    // Click on deleted word to restore it
+                    removeDeletion(deletion.id);
+                  } else {
+                    onWordClick(word);
+                  }
+                }}
+                onMouseDown={(e) => !isDeleted && handleWordMouseDown(word.id, e)}
+                onDoubleClick={() => !isDeleted && handleWordDoubleClick(word)}
+                className={`transcript-word ${isActive ? 'active' : ''} ${isSelected ? 'selected' : ''} ${word.isEdited ? 'editable' : ''} ${isGenerating ? 'generating' : ''} ${editStatus?.status === 'complete' ? 'tts-ready' : ''} ${isDeleted ? 'deleted' : ''}`}
+                title={isDeleted ? 'Click to restore' : isGenerating ? 'Generating AI voice...' : editStatus?.status === 'complete' ? 'AI voice ready' : undefined}
+                style={isDeleted ? { textDecoration: 'line-through', opacity: 0.5, background: 'rgba(239, 68, 68, 0.1)' } : undefined}
               >
                 {word.editedText || word.text}
                 {isGenerating && (
