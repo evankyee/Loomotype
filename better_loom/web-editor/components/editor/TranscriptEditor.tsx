@@ -308,108 +308,87 @@ export function TranscriptEditor({
   }
 
   return (
-    <div className="bg-card border-t border-border">
+    <div className="bg-surface border-t border-border-subtle">
       {/* Toolbar */}
-      <div className="flex items-center justify-between px-4 py-2 border-b border-border">
-        <div className="flex items-center gap-3">
-          <svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-          </svg>
-          <span className="text-sm font-medium">Transcript</span>
+      <div className="flex items-center justify-between px-4 py-2 border-b border-border-subtle">
+        <div className="flex items-center gap-2.5">
+          <span className="text-sm font-medium text-foreground-secondary">Transcript</span>
           {selectedWords.size > 0 && (
-            <span className="text-xs text-muted bg-secondary px-2 py-1 rounded">
-              {selectedWords.size} word{selectedWords.size !== 1 ? 's' : ''} selected
+            <span className="text-2xs text-foreground-muted bg-white/5 px-2 py-0.5 rounded-md">
+              {selectedWords.size} selected
             </span>
           )}
         </div>
 
-        <div className="flex items-center gap-2">
-          {/* Clean Up button - detects and removes fillers/silence */}
+        <div className="flex items-center gap-1.5">
+          {/* Clean Up button */}
           <button
             onClick={() => {
               if (detectedFillers.length > 0) {
-                // Apply all detected fillers as deletions
                 applyFillerDeletions(detectedFillers.map(f => f.id));
               } else {
-                // Detect fillers first
                 detectFillers();
               }
             }}
             disabled={isDetectingFillers || !videoId}
-            className="px-3 py-1.5 bg-orange-500 text-white rounded text-sm font-medium hover:bg-orange-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1"
-            title="Remove filler words (um, uh) and long silences"
+            className="px-2.5 py-1 bg-warning/15 text-warning rounded-md text-xs font-medium hover:bg-warning/25 transition-all duration-100 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5 active:scale-[0.98]"
+            title="Remove filler words and silences"
           >
             {isDetectingFillers ? (
               <>
-                <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.2" />
+                  <path d="M12 2a10 10 0 019.95 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
                 </svg>
-                Detecting...
+                Scanning
               </>
             ) : detectedFillers.length > 0 ? (
-              <>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-                Remove {detectedFillers.length} Items
-              </>
+              `Remove ${detectedFillers.length}`
             ) : (
-              <>
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-                </svg>
-                Clean Up
-              </>
+              'Clean Up'
             )}
           </button>
 
-          {/* Cancel detected fillers */}
           {detectedFillers.length > 0 && (
             <button
               onClick={clearDetectedFillers}
-              className="px-2 py-1.5 text-muted hover:text-foreground text-sm transition-colors"
-              title="Cancel"
+              className="p-1 text-foreground-muted hover:text-foreground-secondary text-xs transition-colors duration-100"
             >
-              ✕
+              <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+              </svg>
             </button>
           )}
 
           {selectedWords.size > 0 && (
             <>
+              <div className="w-px h-4 bg-white/10 mx-1" />
               <button
                 onClick={deleteSelectedWords}
-                className="px-3 py-1.5 bg-red-500 text-white rounded text-sm font-medium hover:bg-red-600 transition-colors flex items-center gap-1"
-                title="Delete selected words (or press Delete key)"
+                className="px-2.5 py-1 bg-danger/15 text-danger rounded-md text-xs font-medium hover:bg-danger/25 transition-all duration-100 active:scale-[0.98]"
+                title="Delete selected (or press Delete)"
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
                 Delete
               </button>
               <button
                 onClick={handleReplaceSelected}
-                className="px-3 py-1.5 bg-accent text-white rounded text-sm font-medium hover:opacity-90 transition-opacity flex items-center gap-1"
+                className="px-2.5 py-1 bg-primary/15 text-primary rounded-md text-xs font-medium hover:bg-primary/25 transition-all duration-100 active:scale-[0.98]"
               >
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
                 Replace
               </button>
               <button
                 onClick={clearSelection}
-                className="px-2 py-1.5 text-muted hover:text-foreground text-sm transition-colors"
+                className="px-2 py-1 text-foreground-muted hover:text-foreground-secondary text-xs transition-colors duration-100"
               >
                 Clear
               </button>
             </>
           )}
-          <span className="text-xs text-muted">
-            {deletions.length > 0
-              ? `${deletions.length} cut${deletions.length !== 1 ? 's' : ''} • `
-              : ''}
-            Select words → Delete
-          </span>
+          {deletions.length > 0 && (
+            <span className="text-2xs text-foreground-muted ml-1">
+              {deletions.length} cut{deletions.length !== 1 ? 's' : ''}
+            </span>
+          )}
         </div>
       </div>
 

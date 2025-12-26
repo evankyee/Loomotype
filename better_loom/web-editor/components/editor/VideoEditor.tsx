@@ -767,30 +767,29 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
             {isPreviewMode && (
               <div className="absolute top-3 left-3 right-3 flex flex-col gap-2 animate-fade-in">
                 <div className="flex items-center justify-between">
-                  <div className="glass px-3 py-1.5 rounded-md flex items-center gap-2 border border-success/20">
-                    <span className="w-2 h-2 rounded-full bg-success animate-pulse-subtle" />
-                    <span className="text-xs font-medium text-foreground">Preview Mode</span>
+                  <div className="glass px-2.5 py-1.5 rounded-lg flex items-center gap-2 border border-white/5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse-subtle" />
+                    <span className="text-xs font-medium text-foreground-secondary">Preview</span>
                   </div>
-                  <div className="flex gap-2">
+                  <div className="flex gap-1.5">
                     <button
                       onClick={handleExitPreview}
-                      className="glass px-3 py-1.5 rounded-md text-xs font-medium text-foreground-secondary hover:text-foreground border border-border-subtle hover:border-border transition-all duration-150"
-                      title="Exit preview and continue editing - all your edits are preserved"
+                      className="glass px-3 py-1.5 rounded-lg text-xs font-medium text-foreground-secondary hover:text-foreground border border-white/5 hover:border-white/10 transition-all duration-100 active:scale-[0.98]"
+                      title="Exit preview and continue editing"
                     >
-                      ← Continue Editing
+                      Back to Edit
                     </button>
                     <button
                       onClick={handleSavePreview}
                       disabled={isSaving || !!previewError}
-                      className="px-3 py-1.5 rounded-md text-xs font-medium bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-150"
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-primary text-white hover:bg-primary-hover disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-100 active:scale-[0.98]"
                     >
-                      {isSaving ? 'Saving...' : 'Save Video'}
+                      {isSaving ? 'Saving...' : 'Export'}
                     </button>
                   </div>
                 </div>
-                {/* Preview error message */}
                 {previewError && (
-                  <div className="glass bg-danger/10 text-danger px-3 py-2 rounded-md text-xs border border-danger/20">
+                  <div className="glass bg-danger/10 text-danger px-3 py-1.5 rounded-lg text-xs border border-danger/20">
                     {previewError}
                   </div>
                 )}
@@ -883,48 +882,46 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
         )}
       </div>
 
-      {/* Controls bar - refined, compact */}
+      {/* Controls bar */}
       <div className="bg-surface border-t border-border-subtle px-3 py-2">
-        <div className="flex items-center gap-3">
-          {/* Play/Pause - larger hit area */}
+        <div className="flex items-center gap-2.5">
+          {/* Play/Pause */}
           <button
             onClick={togglePlay}
-            className="p-1.5 rounded-md text-foreground-secondary hover:text-foreground hover:bg-surface-hover transition-all duration-150"
+            className="p-1.5 rounded-lg text-foreground-secondary hover:text-foreground hover:bg-white/5 transition-all duration-100 active:scale-95"
           >
             {isPlaying ? (
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M6 4h4v16H6V4zm8 0h4v16h-4V4z" />
+                <rect x="6" y="4" width="4" height="16" rx="1" />
+                <rect x="14" y="4" width="4" height="16" rx="1" />
               </svg>
             ) : (
               <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
-                <path d="M8 5v14l11-7z" />
+                <path d="M8 5.14v13.72a1 1 0 001.5.86l11-6.86a1 1 0 000-1.72l-11-6.86a1 1 0 00-1.5.86z" />
               </svg>
             )}
           </button>
 
-          {/* Time display - monospace, subtle separator */}
+          {/* Time display */}
           <div className="text-xs font-mono text-foreground-muted tabular-nums">
             <span className="text-foreground-secondary">{formatTime(currentTime)}</span>
-            <span className="mx-1 text-foreground-muted/50">/</span>
+            <span className="mx-1 opacity-40">/</span>
             <span>{formatTime(duration)}</span>
           </div>
 
-          {/* Divider */}
-          <div className="w-px h-5 bg-border-subtle" />
-
-          {/* Volume - compact */}
-          <div className="flex items-center gap-1.5">
+          {/* Volume */}
+          <div className="flex items-center gap-1.5 ml-1">
             <button
               onClick={toggleMute}
-              className="p-1 text-foreground-muted hover:text-foreground transition-colors duration-150"
+              className="p-1 text-foreground-muted hover:text-foreground-secondary transition-colors duration-100"
             >
               {isMuted || volume === 0 ? (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                   <path strokeLinecap="round" strokeLinejoin="round" d="M17 14l2-2m0 0l2-2m-2 2l-2-2m2 2l2 2" />
                 </svg>
               ) : (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
                 </svg>
               )}
@@ -936,20 +933,19 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
               step="0.1"
               value={volume}
               onChange={(e) => changeVolume(parseFloat(e.target.value))}
-              className="w-16 h-1 bg-surface-elevated rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2.5 [&::-webkit-slider-thumb]:h-2.5 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground-secondary hover:[&::-webkit-slider-thumb]:bg-foreground [&::-webkit-slider-thumb]:transition-colors"
+              className="w-14 h-0.5 bg-white/10 rounded-full appearance-none cursor-pointer [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-2 [&::-webkit-slider-thumb]:h-2 [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:bg-foreground-secondary hover:[&::-webkit-slider-thumb]:bg-foreground [&::-webkit-slider-thumb]:transition-colors"
             />
           </div>
 
-          {/* Spacer */}
           <div className="flex-1" />
 
-          {/* Selection mode toggle - refined pill */}
-          <div className="flex items-center bg-surface-elevated rounded-md p-0.5">
+          {/* Mode toggle */}
+          <div className="flex items-center bg-white/5 rounded-lg p-0.5">
             <button
               onClick={() => setSelectionMode('none')}
-              className={`px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 ${
+              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all duration-100 ${
                 selectionMode === 'none'
-                  ? 'bg-primary text-white shadow-sm'
+                  ? 'bg-white/10 text-foreground'
                   : 'text-foreground-muted hover:text-foreground-secondary'
               }`}
             >
@@ -957,9 +953,9 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
             </button>
             <button
               onClick={() => setSelectionMode('visual')}
-              className={`px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 ${
+              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all duration-100 ${
                 selectionMode === 'visual'
-                  ? 'bg-primary text-white shadow-sm'
+                  ? 'bg-white/10 text-foreground'
                   : 'text-foreground-muted hover:text-foreground-secondary'
               }`}
             >
@@ -967,9 +963,9 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
             </button>
             <button
               onClick={() => setSelectionMode('bubble')}
-              className={`px-2.5 py-1 rounded text-xs font-medium transition-all duration-150 ${
+              className={`px-2.5 py-1 rounded-md text-xs font-medium transition-all duration-100 ${
                 selectionMode === 'bubble'
-                  ? 'bg-primary text-white shadow-sm'
+                  ? 'bg-white/10 text-foreground'
                   : 'text-foreground-muted hover:text-foreground-secondary'
               }`}
             >
@@ -977,7 +973,7 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
             </button>
           </div>
 
-          {/* Pending edits indicator */}
+          {/* Pending edits */}
           {(() => {
             const voiceCount = Object.keys(editedWords).length;
             const visualCount = visualSelections.filter(s => s.replacementValue || s.replacementType === 'blur' || s.replacementType === 'remove').length;
@@ -986,18 +982,17 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
 
             if (totalEdits > 0) {
               return (
-                <div className="flex items-center gap-1.5 text-xs text-foreground-secondary bg-surface-elevated rounded-md px-2 py-1">
-                  <span className="text-foreground-muted">Pending:</span>
-                  {voiceCount > 0 && <span className="text-primary">V:{voiceCount}</span>}
-                  {visualCount > 0 && <span className="text-warning">S:{visualCount}</span>}
-                  {hasBubble && <span className="text-success">C</span>}
+                <div className="flex items-center gap-1.5 text-2xs text-foreground-muted bg-white/5 rounded-md px-2 py-1">
+                  {voiceCount > 0 && <span className="text-primary">{voiceCount} voice</span>}
+                  {visualCount > 0 && <span className="text-warning">{visualCount} visual</span>}
+                  {hasBubble && <span className="text-success">camera</span>}
                 </div>
               );
             }
             return null;
           })()}
 
-          {/* Render button - cleaner states */}
+          {/* Render button */}
           {(() => {
             const voiceCount = Object.keys(editedWords).length;
             const visualCount = visualSelections.filter(s => s.replacementValue || s.replacementType === 'blur' || s.replacementType === 'remove').length;
@@ -1009,46 +1004,40 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
               <button
                 onClick={handleRenderVideo}
                 disabled={isDisabled}
-                className={`h-7 px-3 rounded-md text-xs font-medium transition-all duration-150 flex items-center gap-1.5 ${
+                className={`h-7 px-3 rounded-lg text-xs font-medium transition-all duration-100 flex items-center gap-1.5 active:scale-[0.98] ${
                   isRendering
-                    ? 'bg-warning/15 text-warning border border-warning/20'
+                    ? 'bg-primary/20 text-primary'
                     : !hasAnyEdits
-                    ? 'bg-surface-elevated text-foreground-muted border border-transparent cursor-not-allowed'
-                    : 'bg-success/15 text-success border border-success/20 hover:bg-success/25'
+                    ? 'bg-white/5 text-foreground-muted cursor-not-allowed'
+                    : 'bg-primary text-white hover:bg-primary-hover'
                 }`}
               >
-            {isRendering ? (
-              <>
-                <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
-                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                </svg>
-                {renderProgress}%
-              </>
-            ) : (
-              <>
-                <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z" />
-                </svg>
-                Render
-              </>
-            )}
+                {isRendering ? (
+                  <>
+                    <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeOpacity="0.2" />
+                      <path d="M12 2a10 10 0 019.95 9" stroke="currentColor" strokeWidth="3" strokeLinecap="round" />
+                    </svg>
+                    <span className="tabular-nums">{renderProgress}%</span>
+                  </>
+                ) : (
+                  'Preview'
+                )}
               </button>
             );
           })()}
 
-          {/* Render error - more subtle */}
           {renderError && (
-            <span className="text-danger/80 text-xs max-w-40 truncate" title={renderError}>
+            <span className="text-danger text-2xs max-w-32 truncate" title={renderError}>
               {renderError}
             </span>
           )}
 
-          {/* Playback speed - minimal select */}
+          {/* Speed */}
           <select
             value={playbackRate}
             onChange={(e) => changePlaybackRate(parseFloat(e.target.value))}
-            className="bg-surface-elevated text-xs text-foreground-secondary rounded-md px-2 py-1 border border-transparent hover:border-border outline-none cursor-pointer transition-colors duration-150"
+            className="bg-white/5 text-2xs text-foreground-secondary rounded-md px-1.5 py-1 border-none outline-none cursor-pointer appearance-none hover:bg-white/10 transition-colors duration-100"
           >
             <option value="0.5">0.5x</option>
             <option value="0.75">0.75x</option>
@@ -1059,9 +1048,9 @@ export function VideoEditor({ videoUrl }: VideoEditorProps) {
           </select>
 
           {/* Fullscreen */}
-          <button className="p-1.5 rounded-md text-foreground-muted hover:text-foreground hover:bg-surface-hover transition-all duration-150">
-            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+          <button className="p-1.5 rounded-md text-foreground-muted hover:text-foreground-secondary hover:bg-white/5 transition-all duration-100">
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 3.75v4.5m0-4.5h4.5m-4.5 0L9 9M3.75 20.25v-4.5m0 4.5h4.5m-4.5 0L9 15M20.25 3.75h-4.5m4.5 0v4.5m0-4.5L15 9m5.25 11.25h-4.5m4.5 0v-4.5m0 4.5L15 15" />
             </svg>
           </button>
         </div>

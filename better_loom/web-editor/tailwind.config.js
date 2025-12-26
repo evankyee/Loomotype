@@ -7,83 +7,106 @@ module.exports = {
   theme: {
     extend: {
       colors: {
-        // Backgrounds - warm charcoal tones, not cold navy
-        background: '#0c0c0e',
-        surface: '#141416',
-        'surface-elevated': '#1a1a1d',
-        'surface-hover': '#222225',
+        // Backgrounds - warm charcoal (matches desktop app)
+        background: '#0a0a0b',
+        surface: '#111113',
+        'surface-elevated': '#18181b',
+        'surface-hover': '#1f1f23',
 
-        // Text - softer, more readable (not pure white)
-        foreground: '#f4f4f5',
-        'foreground-secondary': '#a1a1aa',
-        'foreground-muted': '#63636e',
+        // Text - softer than pure white (matches SF Pro rendering)
+        foreground: 'rgba(255, 255, 255, 0.95)',
+        'foreground-secondary': 'rgba(255, 255, 255, 0.7)',
+        'foreground-muted': 'rgba(255, 255, 255, 0.45)',
+        'foreground-tertiary': 'rgba(255, 255, 255, 0.3)',
 
-        // Borders - subtle and refined
-        border: '#27272a',
-        'border-subtle': '#1e1e21',
+        // Borders - barely visible, refined
+        border: 'rgba(255, 255, 255, 0.1)',
+        'border-subtle': 'rgba(255, 255, 255, 0.06)',
 
-        // Primary accent - sophisticated blue (not neon)
-        primary: '#5c7cfa',
-        'primary-hover': '#4c6ef5',
-        'primary-muted': '#364fc7',
+        // Primary - sophisticated indigo-blue
+        primary: '#6366f1',
+        'primary-hover': '#818cf8',
+        'primary-muted': '#4f46e5',
 
-        // Secondary accent - warm coral for video/creative feel
-        accent: '#ff6b6b',
-        'accent-hover': '#fa5252',
-        'accent-muted': '#c92a2a',
+        // Accent - warm coral (video/creative energy)
+        accent: '#f43f5e',
+        'accent-hover': '#fb7185',
+        'accent-muted': '#e11d48',
 
         // Semantic
-        success: '#51cf66',
-        'success-muted': '#40c057',
-        warning: '#fcc419',
-        danger: '#ff6b6b',
-        'danger-hover': '#fa5252',
+        success: '#22c55e',
+        'success-hover': '#4ade80',
+        warning: '#f59e0b',
+        danger: '#ef4444',
+        'danger-hover': '#f87171',
 
-        // Legacy compatibility (gradual migration)
-        card: '#141416',
-        'card-hover': '#1a1a1d',
-        secondary: '#1a1a1d',
-        muted: '#63636e',
+        // Legacy compatibility
+        card: '#111113',
+        'card-hover': '#18181b',
+        secondary: '#18181b',
+        muted: 'rgba(255, 255, 255, 0.45)',
       },
       fontFamily: {
-        sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
-        mono: ['JetBrains Mono', 'SF Mono', 'Consolas', 'monospace'],
+        sans: [
+          'var(--font-sans)',
+          '-apple-system',
+          'BlinkMacSystemFont',
+          'SF Pro Text',
+          'system-ui',
+          'sans-serif',
+        ],
+        mono: [
+          'var(--font-mono)',
+          'SF Mono',
+          'Menlo',
+          'Monaco',
+          'Consolas',
+          'monospace',
+        ],
       },
       fontSize: {
-        'xs': ['0.75rem', { lineHeight: '1rem' }],
-        'sm': ['0.8125rem', { lineHeight: '1.25rem' }],
-        'base': ['0.875rem', { lineHeight: '1.5rem' }],
-        'lg': ['1rem', { lineHeight: '1.75rem' }],
-        'xl': ['1.125rem', { lineHeight: '1.75rem' }],
-        '2xl': ['1.25rem', { lineHeight: '2rem' }],
+        '2xs': ['0.6875rem', { lineHeight: '1rem', letterSpacing: '0.01em' }],
+        'xs': ['0.75rem', { lineHeight: '1rem', letterSpacing: '0.01em' }],
+        'sm': ['0.8125rem', { lineHeight: '1.25rem', letterSpacing: '-0.006em' }],
+        'base': ['0.875rem', { lineHeight: '1.5rem', letterSpacing: '-0.011em' }],
+        'lg': ['1rem', { lineHeight: '1.5rem', letterSpacing: '-0.014em' }],
+        'xl': ['1.125rem', { lineHeight: '1.75rem', letterSpacing: '-0.017em' }],
+        '2xl': ['1.25rem', { lineHeight: '1.75rem', letterSpacing: '-0.019em' }],
+        '3xl': ['1.5rem', { lineHeight: '2rem', letterSpacing: '-0.021em' }],
       },
       spacing: {
         '18': '4.5rem',
         '22': '5.5rem',
       },
       borderRadius: {
-        'sm': '0.25rem',
-        'DEFAULT': '0.375rem',
-        'md': '0.5rem',
-        'lg': '0.75rem',
-        'xl': '1rem',
+        'sm': '4px',
+        'DEFAULT': '6px',
+        'md': '8px',
+        'lg': '10px',
+        'xl': '12px',
+        '2xl': '16px',
+        '3xl': '20px',
       },
       boxShadow: {
-        'subtle': '0 1px 2px 0 rgba(0, 0, 0, 0.3)',
-        'elevated': '0 4px 12px 0 rgba(0, 0, 0, 0.4)',
-        'glow': '0 0 20px rgba(92, 124, 250, 0.15)',
-        'glow-accent': '0 0 20px rgba(255, 107, 107, 0.15)',
+        'subtle': '0 1px 2px rgba(0, 0, 0, 0.5)',
+        'elevated': '0 4px 16px rgba(0, 0, 0, 0.4)',
+        'glow': '0 0 24px rgba(99, 102, 241, 0.15)',
+        'glow-accent': '0 0 24px rgba(244, 63, 94, 0.15)',
+        'inset': 'inset 0 1px 0 rgba(255, 255, 255, 0.1)',
       },
       transitionDuration: {
+        '100': '100ms',
         '150': '150ms',
         '200': '200ms',
       },
       transitionTimingFunction: {
         'snappy': 'cubic-bezier(0.2, 0, 0, 1)',
+        'smooth': 'cubic-bezier(0.4, 0, 0.2, 1)',
       },
       animation: {
-        'fade-in': 'fadeIn 200ms ease-out',
-        'slide-up': 'slideUp 200ms cubic-bezier(0.2, 0, 0, 1)',
+        'fade-in': 'fadeIn 150ms ease-out',
+        'slide-up': 'slideUp 150ms cubic-bezier(0.2, 0, 0, 1)',
+        'scale-in': 'scaleIn 150ms cubic-bezier(0.2, 0, 0, 1)',
         'pulse-subtle': 'pulseSubtle 2s ease-in-out infinite',
       },
       keyframes: {
@@ -95,10 +118,17 @@ module.exports = {
           '0%': { opacity: '0', transform: 'translateY(4px)' },
           '100%': { opacity: '1', transform: 'translateY(0)' },
         },
+        scaleIn: {
+          '0%': { opacity: '0', transform: 'scale(0.96)' },
+          '100%': { opacity: '1', transform: 'scale(1)' },
+        },
         pulseSubtle: {
           '0%, 100%': { opacity: '1' },
-          '50%': { opacity: '0.7' },
+          '50%': { opacity: '0.6' },
         },
+      },
+      backdropBlur: {
+        'xs': '4px',
       },
     },
   },

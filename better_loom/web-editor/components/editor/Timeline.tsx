@@ -192,35 +192,36 @@ export function Timeline({
   const deletedCount = segments.filter(s => s.isDeleted).length;
 
   return (
-    <div className="timeline-container p-3">
+    <div className="bg-surface border-t border-border-subtle p-3">
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-3">
-          <span className="text-xs text-foreground-secondary font-medium">Timeline</span>
-          <span className="text-xs text-foreground-muted font-mono">
-            {formatTime(outputDuration)} content
+        <div className="flex items-center gap-2.5">
+          <span className="text-sm font-medium text-foreground-secondary">Timeline</span>
+          <span className="text-2xs text-foreground-muted font-mono tabular-nums">
+            {formatTime(outputDuration)}
           </span>
           {deletedCount > 0 && (
             <button
-              className="text-[10px] text-red-400 hover:text-red-300"
+              className="text-2xs text-danger/80 hover:text-danger transition-colors duration-100"
               onClick={() => segments.filter(s => s.isDeleted).forEach(s => restoreSegment(s.id))}
             >
-              +{deletedCount} deleted
+              +{deletedCount} cut
             </button>
           )}
         </div>
         <button
           onClick={handleSplit}
-          className="px-2 py-1 text-xs bg-blue-500/80 text-white rounded hover:bg-blue-500"
+          className="px-2.5 py-1 text-xs bg-white/5 text-foreground-secondary rounded-md hover:bg-white/10 hover:text-foreground transition-all duration-100 active:scale-[0.98]"
         >
-          Split (S)
+          Split
+          <kbd className="ml-1.5 text-2xs text-foreground-muted">S</kbd>
         </button>
       </div>
 
       {/* Time markers */}
       <div className="flex justify-between mb-1 px-0.5">
         {generateTimeMarkers(timelineDuration).map((time, i) => (
-          <span key={i} className="text-[10px] text-foreground-muted font-mono">{formatTime(time)}</span>
+          <span key={i} className="text-2xs text-foreground-muted font-mono tabular-nums">{formatTime(time)}</span>
         ))}
       </div>
 
@@ -303,9 +304,9 @@ export function Timeline({
       </div>
 
       {/* Footer */}
-      <div className="flex justify-between mt-1.5 text-[10px] font-mono text-foreground-muted">
-        <span>{formatTime(currentTime)}</span>
-        <span className="text-foreground-secondary">Drag clips to move • Drag edges to trim</span>
+      <div className="flex justify-between mt-2 text-2xs font-mono text-foreground-muted">
+        <span className="tabular-nums">{formatTime(currentTime)}</span>
+        <span className="text-foreground-tertiary">Drag to move • Edges to trim</span>
       </div>
     </div>
   );
